@@ -229,39 +229,51 @@ class KotlinNativeExportPlugin : Plugin<Project> {
             )
         }
 
-        // ── Bundle native lib into JVM resources (zero-config deployment) ────
+        // ── Bundle native libs (zero-config deployment: JAR resources + jniLibs layout) ──
+        //
+        // Output layout — doubles as the JAR resource root and an AGP `jniLibs.srcDir` target:
+        //   generated/kne/nativeLib/jniLibs/<platform>/<lib>
+        // where <platform> is a standard Android ABI name (arm64-v8a, ...) for androidNative
+        // targets and {os}-{arch} (win32-x64, darwin-aarch64, ...) for desktop targets.
 
-        if (nativeTarget != null) {
-            // konan target names are the actual target name but we can have an associated alias
-            val targetAliasName = nativeTarget.name
-            val targetName = nativeTarget.konanTarget.name
-
-            project.logger.log(LogLevel.INFO, "TARGET ALIAS :$targetAliasName, TARGET NAME:$targetName")
-
-            val targetCap = targetAliasName.replaceFirstChar { it.uppercaseChar() }
+        val nativeTargets = kotlin.targets.filterIsInstance<KotlinNativeTarget>()
+        if (nativeTargets.isNotEmpty()) {
             val libCap = libName.replaceFirstChar { it.uppercaseChar() }
-
-            val platform = mapTargetToPlatform(targetName)
-
-            val linkTaskName = "link${libCap}ReleaseShared$targetCap"
             val nativeLibResourceDir = project.layout.buildDirectory.dir("generated/kne/nativeLib")
-
             val buildDir = project.layout.buildDirectory
+
             val copyNativeLib = project.tasks.register("copyKneNativeLib") {
                 group = "kne"
-                description = "Copy native shared library into JVM resources for JAR bundling"
-                dependsOn(linkTaskName)
+                description = "Copy native shared libraries into the jniLibs-layout resource dir for JAR/APK bundling"
+                dependsOn(nativeTargets.map { target ->
+                    "link${libCap}ReleaseShared${target.name.replaceFirstChar { it.uppercaseChar() }}"
+                })
                 doLast {
-                    val releaseDir = buildDir
-                        .dir("bin/$targetAliasName/${libName}ReleaseShared").get().asFile
-                    val nativeFile = releaseDir.listFiles()?.firstOrNull { f ->
-                        f.extension in listOf("so", "dylib", "dll")
-                    }
-                    if (nativeFile != null) {
-                        val destDir = nativeLibResourceDir.get().asFile.resolve("kne/native/$platform")
+                    // Clean the whole output dir so stale layouts (e.g. entries copied under a
+                    // previous layout scheme, or libs of targets that no longer exist) never
+                    // leak into the resources/JAR.
+                    nativeLibResourceDir.get().asFile.apply { deleteRecursively(); mkdirs() }
+                    nativeTargets.forEach { target ->
+                        val platform = mapTargetToPlatform(target.konanTarget.name)
+                        val releaseDir = buildDir
+                            .dir("bin/${target.name}/${libName}ReleaseShared").get().asFile
+                        val nativeFile = releaseDir.listFiles()?.firstOrNull { f ->
+                            f.extension in listOf("so", "dylib", "dll")
+                        } ?: run {
+                            logger.lifecycle("kne: No shared library built for ${target.name}, skipping jniLibs/$platform")
+                            return@forEach
+                        }
+                        // AGP's jniLibs requires the Android ABI naming (lib<name>.so); Kotlin/Native
+                        // already emits that prefix, normalize just in case.
+                        val destName = if (platform in ANDROID_ABIS && !nativeFile.name.startsWith("lib")) {
+                            "lib$libName.${nativeFile.extension}"
+                        } else {
+                            nativeFile.name
+                        }
+                        val destDir = nativeLibResourceDir.get().asFile.resolve("jniLibs/$platform")
                         destDir.mkdirs()
-                        nativeFile.copyTo(destDir.resolve(nativeFile.name), overwrite = true)
-                        logger.lifecycle("kne: Bundled ${nativeFile.name} → kne/native/$platform/")
+                        nativeFile.copyTo(destDir.resolve(destName), overwrite = true)
+                        logger.lifecycle("kne: Bundled ${nativeFile.name} → jniLibs/$platform/$destName")
                     }
                 }
             }
@@ -282,7 +294,12 @@ class KotlinNativeExportPlugin : Plugin<Project> {
         configureJvmTestPaths(project, kotlin, extension)
     }
 
-    /** Map Kotlin/Native target name to platform directory name. */
+    /**
+     * Map a Kotlin/Native target to its `jniLibs` platform directory name: standard Android
+     * ABI names for androidNative targets (so the layout wires straight into AGP's
+     * `jniLibs.srcDir`), `{os}-{arch}` for desktop platforms. Accepts both the Kotlin target
+     * alias (`androidNativeArm64`) and the konan preset name (`android_arm64`).
+     */
     private fun mapTargetToPlatform(targetName: String): String {
 
         val isArm = targetName.contains("Arm")
@@ -290,10 +307,10 @@ class KotlinNativeExportPlugin : Plugin<Project> {
         val isArm64 = targetName.contains("arm64") || targetName.contains("Arm64")
 
         return when {
-            targetName.startsWith("androidNativeArm64") -> "android-arm64"
-            targetName.startsWith("androidNativeX64") -> "android-x64"
-            targetName.startsWith("androidNativeArm32") -> "android-arm32"
-            targetName.startsWith("androidNativeX86") -> "android-x86"
+            targetName.startsWith("androidNativeArm64") || targetName.startsWith("android_arm64") -> "arm64-v8a"
+            targetName.startsWith("androidNativeX64") || targetName.startsWith("android_x64") -> "x86_64"
+            targetName.startsWith("androidNativeArm32") || targetName.startsWith("android_arm32") -> "armeabi-v7a"
+            targetName.startsWith("androidNativeX86") || targetName.startsWith("android_x86") -> "x86"
             targetName.startsWith("linux") -> if (isArm || isArch) "linux-aarch64" else "linux-x64"
             targetName.startsWith("macos") -> if (isArm || isArm64) "darwin-aarch64" else "darwin-x64"
             targetName.startsWith("mingw") -> if (isArm) "win32-arm64" else "win32-x64"
@@ -362,5 +379,8 @@ class KotlinNativeExportPlugin : Plugin<Project> {
         private const val DEFAULT_COROUTINES_VERSION = "1.11.0"
         private const val BRIDGE_MODE_PROPERTY = "kne.bridgeMode"
         private val BRIDGE_MODES = listOf("ffm", "jni")
+
+        /** Standard Android ABI directory names used under `jniLibs/`. */
+        private val ANDROID_ABIS = setOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
     }
 }

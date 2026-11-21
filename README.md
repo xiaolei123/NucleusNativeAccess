@@ -24,7 +24,7 @@ class Calculator {      →     @CName bridges (native)   →   class Calculator
 2. Generates `@CName` bridge functions with `StableRef` for object lifecycle (native side)
 3. Generates JVM proxy classes with FFM `MethodHandle` downcalls (JVM side)
 4. Compiles to a shared library (`.so` / `.dylib` / `.dll`)
-5. Bundles the native library into the JAR under `kne/native/{os}-{arch}/`
+5. Bundles the native library into the JAR under `jniLibs/{platform}/` (standard Android ABI names like `arm64-v8a` for androidNative targets, `{os}-{arch}` like `win32-x64` for desktop)
 6. Generates GraalVM reachability metadata (reflection, resources, FFM downcall descriptors)
 7. JVM code calls the proxies transparently &mdash; every call crosses the FFM boundary into native
 
@@ -483,7 +483,14 @@ In JNI mode the plugin additionally:
 
 The public API surface (class shapes, method signatures, exception types, lifecycle) is identical in both modes &mdash; the same test suite runs against either backend.
 
-For Android, place the native `.so` in `jniLibs/<abi>/` as usual; the runtime uses `System.loadLibrary()` after checking `java.library.path`.
+For Android, the plugin already emits the native `.so` in the standard `jniLibs/<abi>/` layout at `build/generated/kne/nativeLib/jniLibs/` &mdash; wire that directory into your Android module and `System.loadLibrary()` picks it up from the APK:
+
+```kotlin
+// Android module build.gradle.kts
+android {
+    sourceSets["main"].jniLibs.srcDir("<lib-project>/build/generated/kne/nativeLib/jniLibs")
+}
+```
 
 ### JVM runtime requirements
 
@@ -500,8 +507,9 @@ The native library is automatically bundled in the JAR and extracted at runtime 
 The generated `KneRuntime` uses a three-tier loading strategy:
 
 1. **`java.library.path`** &mdash; for development, packaged apps, or manual override
-2. **JAR extraction** &mdash; extracts from `kne/native/{os}-{arch}/` in the classpath to a persistent cache (`~/.cache/kne/`)
-3. **Loader lookup** &mdash; fallback for GraalVM native-image (native lib beside the executable)
+2. **`System.loadLibrary`** (JNI mode) &mdash; Android `jniLibs/<abi>/` from the APK, or system-installed libraries
+3. **JAR extraction** &mdash; extracts from `jniLibs/{platform}/` in the classpath to a persistent cache (`~/.cache/kne/`)
+4. **Loader lookup** (FFM mode) &mdash; fallback for GraalVM native-image (native lib beside the executable)
 
 ### Build performance & Gradle Cache
 

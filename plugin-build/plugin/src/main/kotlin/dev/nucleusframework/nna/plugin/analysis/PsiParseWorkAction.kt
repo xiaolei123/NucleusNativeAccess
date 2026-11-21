@@ -172,7 +172,7 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
         resources["$metaDir/resource-config.json"] = """{
   "resources": {
     "includes": [
-      { "pattern": "\\Qkne/native/\\E.*" }
+      { "pattern": "\\QjniLibs/\\E.*" }
     ]
   }
 }
@@ -205,7 +205,7 @@ $upcallEntries
 ${classNames.joinToString(",\n") { """    { "type": "$it", "allDeclaredConstructors": true, "allDeclaredMethods": true }""" }}
   ],
   "resources": [
-    { "glob": "kne/native/**" }
+    { "glob": "jniLibs/**" }
   ],
   "foreign": {
     "downcalls": [

@@ -50,7 +50,7 @@ fun generateGraalVmMetadataJni(
     resources["$metaDir/resource-config.json"] = """{
   "resources": {
     "includes": [
-      { "pattern": "\\Qkne/native/\\E.*" }
+      { "pattern": "\\QjniLibs/\\E.*" }
     ]
   }
 }
@@ -65,7 +65,7 @@ fun generateGraalVmMetadataJni(
 $classEntries
   ],
   "resources": [
-    { "glob": "kne/native/**" }
+    { "glob": "jniLibs/**" }
   ],
   "jni": [
 $classEntries
