@@ -49,6 +49,18 @@ abstract class GenerateNativeBridgesTask : DefaultTask() {
     @get:Input
     abstract val taskJvmPackage: Property<String>
 
+    /** Bridge backend: "ffm" (default) or "jni". Selects which generators run in the worker. */
+    @get:Input
+    abstract val taskBridgeMode: Property<String>
+
+    /**
+     * JDK include directory path (containing jni.h), used to write the cinterop def
+     * file in JNI mode. Optional: only set when [taskBridgeMode] is "jni".
+     */
+    @get:Optional
+    @get:Input
+    abstract val taskJdkIncludeDir: Property<String>
+
     @get:OutputDirectory
     abstract val taskOutputDir: DirectoryProperty
 
@@ -57,6 +69,14 @@ abstract class GenerateNativeBridgesTask : DefaultTask() {
 
     @get:OutputDirectory
     abstract val taskJvmResourcesDir: DirectoryProperty
+
+    /**
+     * Cinterop def file directory (JNI mode: knejni.def pointing at the JDK headers).
+     * Only populated in JNI mode; declared optional since FFM mode never writes it.
+     */
+    @get:Optional
+    @get:OutputDirectory
+    abstract val taskCinteropDir: DirectoryProperty
 
     /** Incremental parse state; never stored in the build cache and wiped when outputs come from it. */
     @get:LocalState
@@ -71,6 +91,7 @@ abstract class GenerateNativeBridgesTask : DefaultTask() {
             }
             logger.lifecycle("kne: No Kotlin sources found, skipping."); return
         }
+        writeCinteropDefIfNeeded()
         val commonKtFiles = taskCommonSources.orderedKotlinFiles()
 
         val pluginLocation = PsiParseWorkAction::class.java.protectionDomain?.codeSource?.location
@@ -87,12 +108,49 @@ abstract class GenerateNativeBridgesTask : DefaultTask() {
             commonSourceFiles.from(commonKtFiles)
             libName.set(taskLibName)
             jvmPackage.set(taskJvmPackage)
+            bridgeMode.set(taskBridgeMode)
             nativeBridgesDir.set(taskOutputDir)
             jvmProxiesDir.set(taskJvmOutputDir)
             jvmResourcesDir.set(taskJvmResourcesDir)
             cacheFile.set(taskCacheDir.file("parse-cache.bin"))
             cacheKey.set(cacheKey(pluginLocation))
         }
+    }
+
+    /**
+     * JNI mode: emit the cinterop def file that exposes jni.h to the native bridge
+     * (package `dev.nucleusframework.knejni`). FFM mode: remove any stale def file.
+     */
+    private fun writeCinteropDefIfNeeded() {
+        val cinteropDir = taskCinteropDir.orNull?.asFile ?: return
+        val defFile = cinteropDir.resolve("knejni.def")
+        if (taskBridgeMode.get() != "jni") {
+            defFile.delete()
+            return
+        }
+        val includeDir = File(taskJdkIncludeDir.get())
+        val platformDirName = when {
+            System.getProperty("os.name").startsWith("Mac") -> "darwin"
+            System.getProperty("os.name").startsWith("Windows") -> "win32"
+            else -> "linux"
+        }
+        val opts = buildList {
+            // .def file values are parsed with java.util.Properties semantics,
+            // which treat '\' as an escape prefix and mangle backslash paths.
+            // Emit forward slashes so clang receives the paths verbatim.
+            add("-I${includeDir.absolutePath.replace('\\', '/')}")
+            add("-I${includeDir.resolve(platformDirName).absolutePath.replace('\\', '/')}")
+        }
+        val content = buildString {
+            appendLine("headers = jni.h")
+            appendLine("headerFilter = jni.*")
+            appendLine("package = dev.nucleusframework.knejni")
+            appendLine()
+            appendLine("compilerOpts = ${opts.joinToString(" ")}")
+        }
+        cinteropDir.mkdirs()
+        defFile.writeText(content)
+        logger.lifecycle("kne: Wrote JNI cinterop def file: $defFile")
     }
 
     /**

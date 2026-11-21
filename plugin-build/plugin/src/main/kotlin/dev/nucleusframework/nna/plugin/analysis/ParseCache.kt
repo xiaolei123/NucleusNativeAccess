@@ -42,11 +42,14 @@ data class CodegenSnapshot(
     val module: KneModule,
     val packageOrder: List<String>,
     val jvmPackage: String,
+    /** Bridge backend that produced the outputs ("ffm" / "jni"); switching invalidates the snapshot. */
+    val bridgeMode: String = "ffm",
     val outputHashes: Map<String, String>,
 ) : Serializable {
 
-    fun matches(module: KneModule, jvmPackage: String): Boolean =
-        this.jvmPackage == jvmPackage && this.module == module && packageOrder == module.packages.toList()
+    fun matches(module: KneModule, jvmPackage: String, bridgeMode: String): Boolean =
+        this.jvmPackage == jvmPackage && this.bridgeMode == bridgeMode &&
+            this.module == module && packageOrder == module.packages.toList()
 }
 
 /**

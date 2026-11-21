@@ -47,6 +47,7 @@ composeCompiler {
 kotlinNativeExport {
     nativeLibName = "calculator"
     nativePackage = "com.example.calculator"
+    bridgeMode = "jni"
 }
 
 nucleus.application {

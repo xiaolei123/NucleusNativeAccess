@@ -38,6 +38,7 @@ class KotlinNativeExportPlugin : Plugin<Project> {
         extension.nativeLibName.convention("nativelib")
         extension.nativePackage.convention("")
         extension.buildType.convention("release")
+        extension.bridgeMode.convention("ffm")
 
         project.plugins.withId("org.jetbrains.kotlin.multiplatform") {
             project.afterEvaluate { configureKmp(project, extension) }
@@ -49,6 +50,24 @@ class KotlinNativeExportPlugin : Plugin<Project> {
 
         val libName = extension.nativeLibName.get()
         val pkg = extension.nativePackage.get()
+
+        // Bridge backend: extension value, overridable per-build via -Pkne.bridgeMode=...
+        val requestedMode = project.findProperty(BRIDGE_MODE_PROPERTY)?.toString() ?: extension.bridgeMode.get()
+        val bridgeMode = requestedMode.lowercase()
+        if (bridgeMode !in BRIDGE_MODES) {
+            throw GradleException(
+                "kotlinNativeExport.bridgeMode (or -P$BRIDGE_MODE_PROPERTY) must be one of ${BRIDGE_MODES.joinToString(", ")}, got '$requestedMode'"
+            )
+        }
+
+        // In JNI mode the native bridge needs the JDK's jni.h for its cinterop.
+        val jdkIncludeDir = resolveJdkIncludeDir()
+        if (bridgeMode == "jni" && jdkIncludeDir == null) {
+            throw GradleException(
+                "kotlinNativeExport bridgeMode=jni requires a JDK with include/jni.h " +
+                    "(looked at java.home=${System.getProperty("java.home")} and JAVA_HOME=${System.getenv("JAVA_HOME")})"
+            )
+        }
 
         // read the jvm target name
         // JVM target should exist otherwise the plugin is of no use
@@ -63,6 +82,7 @@ class KotlinNativeExportPlugin : Plugin<Project> {
         val nativeBridgesDir = project.layout.buildDirectory.dir("generated/kne/nativeBridges")
         val jvmProxiesDir = project.layout.buildDirectory.dir("generated/kne/jvmProxies")
         val jvmResourcesDir = project.layout.buildDirectory.dir("generated/kne/jvmResources")
+        val cinteropDefDir = project.layout.buildDirectory.dir("generated/kne/cinterop")
         val incrementalCacheDir = project.layout.buildDirectory.dir("kne/incremental")
 
         // Detect the first native target and its source sets.
@@ -112,14 +132,21 @@ class KotlinNativeExportPlugin : Plugin<Project> {
         // Single task generates both native bridges and JVM proxies (PSI parsing + codegen in isolated worker)
         val generateBridges = project.tasks.register<GenerateNativeBridgesTask>("generateKneNativeBridges") {
             group = "kne"
-            description = "Generate Kotlin/Native bridges and JVM FFM proxies"
+            description = if (bridgeMode == "jni") {
+                "Generate Kotlin/Native JNI bridges and JVM proxy classes"
+            } else {
+                "Generate Kotlin/Native bridges and JVM FFM proxies"
+            }
             taskNativeSources.from(userNativeSources)
             taskCommonSources.from(commonSources)
             taskLibName.set(libName)
             taskJvmPackage.set(pkg)
+            taskBridgeMode.set(bridgeMode)
+            jdkIncludeDir?.let { taskJdkIncludeDir.set(it.absolutePath) }
             taskOutputDir.set(nativeBridgesDir)
             taskJvmOutputDir.set(jvmProxiesDir)
             taskJvmResourcesDir.set(jvmResourcesDir)
+            taskCinteropDir.set(cinteropDefDir)
             taskCacheDir.set(incrementalCacheDir)
             taskPsiClasspath.from(psiClasspath)
         }
@@ -145,6 +172,26 @@ class KotlinNativeExportPlugin : Plugin<Project> {
         }
         kotlin.sourceSets.findByName(jvmTestSourceSetName)?.dependencies {
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:$coroutinesVersion")
+        }
+
+        // ── JNI mode: register the jni.h cinterop used by the native bridge ──
+        // The generated native code imports `dev.nucleusframework.knejni.*` to talk
+        // to JNIEnv; in FFM mode no cinterop is registered and no import is generated.
+        if (bridgeMode == "jni") {
+            nativeTarget?.let { target ->
+                val defFilePath = cinteropDefDir.get().asFile.resolve("knejni.def")
+                target.compilations.getByName("main") {
+                    cinterops {
+                        create("knejni") {
+                            defFile = defFilePath
+                        }
+                    }
+                }
+            }
+            // The def file is produced by the generation task
+            project.tasks.configureEach {
+                if (name.startsWith("cinteropKnejni")) dependsOn(generateBridges)
+            }
         }
 
         // Wire generated bridges into the native source set (try nativeMain, fall back to <target>Main)
@@ -243,12 +290,29 @@ class KotlinNativeExportPlugin : Plugin<Project> {
         val isArm64 = targetName.contains("arm64") || targetName.contains("Arm64")
 
         return when {
+            targetName.startsWith("androidNativeArm64") -> "android-arm64"
+            targetName.startsWith("androidNativeX64") -> "android-x64"
+            targetName.startsWith("androidNativeArm32") -> "android-arm32"
+            targetName.startsWith("androidNativeX86") -> "android-x86"
             targetName.startsWith("linux") -> if (isArm || isArch) "linux-aarch64" else "linux-x64"
             targetName.startsWith("macos") -> if (isArm || isArm64) "darwin-aarch64" else "darwin-x64"
             targetName.startsWith("mingw") -> if (isArm) "win32-arm64" else "win32-x64"
             else -> "unknown"
         }
     }
+
+    /**
+     * Locates a JDK whose `include/jni.h` exists (needed by the JNI-mode cinterop).
+     * Checks the Gradle JVM's java.home first, then the JAVA_HOME environment variable.
+     */
+    private fun resolveJdkIncludeDir(): File? =
+        sequenceOf(
+            System.getProperty("java.home")?.let(::File),
+            System.getenv("JAVA_HOME")?.let(::File),
+        )
+            .filterNotNull()
+            .map { it.resolve("include") }
+            .firstOrNull { it.resolve("jni.h").isFile }
 
     /**
      * Mirrors swift-java's convention: include both debug + release library
@@ -296,5 +360,7 @@ class KotlinNativeExportPlugin : Plugin<Project> {
 
     companion object {
         private const val DEFAULT_COROUTINES_VERSION = "1.11.0"
+        private const val BRIDGE_MODE_PROPERTY = "kne.bridgeMode"
+        private val BRIDGE_MODES = listOf("ffm", "jni")
     }
 }

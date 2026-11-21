@@ -442,15 +442,56 @@ kotlinNativeExport {
 
     // Build type: "release" (default, ~700KB .so) or "debug" (~6MB .so)
     buildType = "release"
+
+    // Bridge backend: "ffm" (default, JDK 22+) or "jni" (JDK 8+, Android JVM compatible)
+    // Can be overridden per-build with: ./gradlew -Pkne.bridgeMode=jni
+    bridgeMode = "ffm"
 }
 ```
+
+### Bridge backend (FFM vs JNI)
+
+The plugin supports two bridge backends, switchable via `bridgeMode`:
+
+| | FFM (default) | JNI |
+|---|---|---|
+| **JDK requirement** | JDK 22+ ([JEP 454](https://openjdk.org/jeps/454)) | JDK 8+ / Android JVM |
+| **Mechanism** | `MethodHandle` downcalls | `external fun` + `RegisterNatives` |
+| **Android** | ❌ no FFM API | ✅ works out of the box |
+| **GraalVM native-image** | `foreign` metadata section | `jni` metadata section |
+| **minSdk (Android)** | N/A | 26+ (`java.lang.ref.Cleaner`) |
+
+To use JNI mode:
+
+```kotlin
+kotlinNativeExport {
+    bridgeMode = "jni"
+}
+```
+
+Or override per-build without touching the build script:
+
+```bash
+./gradlew -Pkne.bridgeMode=jni jvmTest
+```
+
+In JNI mode the plugin additionally:
+- Registers a `jni.h` cinterop on the native compilation (from the local JDK's include directory)
+- Generates `external fun` JVM proxies instead of FFM `MethodHandle` proxies
+- Generates a `RegisterNatives` bootstrap in the native shared library
+- Produces `jni-config.json` GraalVM metadata instead of foreign downcall descriptors
+
+The public API surface (class shapes, method signatures, exception types, lifecycle) is identical in both modes &mdash; the same test suite runs against either backend.
+
+For Android, place the native `.so` in `jniLibs/<abi>/` as usual; the runtime uses `System.loadLibrary()` after checking `java.library.path`.
 
 ### JVM runtime requirements
 
 The generated FFM proxies require:
 
-- **JDK 22+** (FFM API finalized in JDK 22 via [JEP 454](https://openjdk.org/jeps/454), recommended JDK 25)
-- **`--enable-native-access=ALL-UNNAMED`** JVM arg (auto-configured for tests by the plugin)
+- **FFM mode**: JDK 22+ (FFM API finalized in JDK 22 via [JEP 454](https://openjdk.org/jeps/454), recommended JDK 25)
+- **JNI mode**: JDK 8+ (no `java.lang.foreign` APIs used), Android API 26+
+- **`--enable-native-access=ALL-UNNAMED`** JVM arg (FFM mode only; auto-configured for tests by the plugin)
 
 The native library is automatically bundled in the JAR and extracted at runtime &mdash; no manual `java.library.path` configuration needed.
 

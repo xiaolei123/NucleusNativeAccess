@@ -2,6 +2,9 @@ package dev.nucleusframework.nna.plugin.analysis
 
 import dev.nucleusframework.nna.plugin.codegen.FfmProxyGenerator
 import dev.nucleusframework.nna.plugin.codegen.GeneratedOutputs
+import dev.nucleusframework.nna.plugin.codegen.JniNativeBridgeGenerator
+import dev.nucleusframework.nna.plugin.codegen.JniProxyGenerator
+import dev.nucleusframework.nna.plugin.codegen.generateGraalVmMetadataJni
 import dev.nucleusframework.nna.plugin.codegen.NativeBridgeGenerator
 import dev.nucleusframework.nna.plugin.ir.KneModule
 import org.gradle.api.file.ConfigurableFileCollection
@@ -30,6 +33,8 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
         val commonSourceFiles: ConfigurableFileCollection
         val libName: Property<String>
         val jvmPackage: Property<String>
+        /** Bridge backend: "ffm" (default) or "jni". */
+        val bridgeMode: Property<String>
         val nativeBridgesDir: DirectoryProperty
         val jvmProxiesDir: DirectoryProperty
         val jvmResourcesDir: DirectoryProperty
@@ -44,6 +49,7 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
         val commonFiles = parameters.commonSourceFiles.files
         val sources = parameters.sourceFiles.files.map { PsiSourceParser.Source(it, isCommon = it in commonFiles) }
         val libName = parameters.libName.get()
+        val bridgeMode = parameters.bridgeMode.get()
         val cacheFile = parameters.cacheFile.get().asFile
         val cacheKey = parameters.cacheKey.get()
         val previous = ParseCache.read(cacheFile, cacheKey)
@@ -63,13 +69,13 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
             JVM_RESOURCES to parameters.jvmResourcesDir.get().asFile,
         )
         val snapshot = previous?.codegen
-        val codegen = if (snapshot != null && snapshot.matches(module, jvmPackage) && GeneratedOutputs.hashes(roots) == snapshot.outputHashes) {
+        val codegen = if (snapshot != null && snapshot.matches(module, jvmPackage, bridgeMode) && GeneratedOutputs.hashes(roots) == snapshot.outputHashes) {
             logger.lifecycle("kne: API unchanged, generated sources are up to date")
             snapshot
         } else {
-            val sync = GeneratedOutputs.sync(roots, generate(module, jvmPackage))
+            val sync = GeneratedOutputs.sync(roots, generate(module, jvmPackage, bridgeMode))
             logger.lifecycle("kne: Updated ${sync.written} and deleted ${sync.deleted} generated file(s)")
-            CodegenSnapshot(module, module.packages.toList(), jvmPackage, sync.hashes)
+            CodegenSnapshot(module, module.packages.toList(), jvmPackage, bridgeMode, sync.hashes)
         }
 
         try {
@@ -82,7 +88,7 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
     }
 
     /** Generates every output file from the module, grouped by output root. */
-    private fun generate(module: KneModule, jvmPackage: String): Map<String, Map<String, String>> {
+    private fun generate(module: KneModule, jvmPackage: String, bridgeMode: String): Map<String, Map<String, String>> {
         val outputs = mapOf(
             NATIVE_BRIDGES to LinkedHashMap<String, String>(),
             JVM_PROXIES to LinkedHashMap(),
@@ -91,6 +97,23 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
         val hasApi = module.classes.isNotEmpty() || module.enums.isNotEmpty() || module.functions.isNotEmpty()
         if (!hasApi) return outputs
 
+        if (bridgeMode == "jni") {
+            // JNI backend: RegisterNatives-based bridges + external fun proxies.
+            // The JVM package must be forwarded: proxies are generated flat inside it, so every
+            // native-side FindClass / method descriptor is derived from that package.
+            outputs.getValue(NATIVE_BRIDGES)["kne_bridges.kt"] = JniNativeBridgeGenerator().generate(module, jvmPackage)
+
+            if (jvmPackage.isNotEmpty()) {
+                val pkgPath = jvmPackage.replace('.', '/')
+                JniProxyGenerator().generate(module, jvmPackage).forEach { (filename, content) ->
+                    outputs.getValue(JVM_PROXIES)["$pkgPath/$filename"] = content
+                }
+                generateGraalVmMetadataJni(outputs.getValue(JVM_RESOURCES), module, jvmPackage)
+            }
+            return outputs
+        }
+
+        // FFM backend (default)
         // Native bridges
         outputs.getValue(NATIVE_BRIDGES)["kne_bridges.kt"] = NativeBridgeGenerator().generate(module)
 

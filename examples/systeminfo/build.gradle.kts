@@ -90,6 +90,7 @@ composeCompiler {
 kotlinNativeExport {
     nativeLibName = "systeminfo"
     nativePackage = "com.example.systeminfo"
+    bridgeMode = "jni"
 }
 
 nucleus.application {
