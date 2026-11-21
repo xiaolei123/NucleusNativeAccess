@@ -12,6 +12,7 @@ import org.jetbrains.kotlin.gradle.dsl.KotlinProjectExtension
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 import org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType
 import org.jetbrains.kotlin.gradle.targets.jvm.KotlinJvmTarget
+import org.jetbrains.kotlin.konan.target.Family
 import java.io.File
 
 /**
@@ -80,6 +81,7 @@ class KotlinNativeExportPlugin : Plugin<Project> {
         val jvmTaskName = jvmTarget.name.replaceFirstChar { it.titlecase() }
 
         val nativeBridgesDir = project.layout.buildDirectory.dir("generated/kne/nativeBridges")
+        val androidNativeBridgesDir = project.layout.buildDirectory.dir("generated/kne/androidNativeBridges")
         val jvmProxiesDir = project.layout.buildDirectory.dir("generated/kne/jvmProxies")
         val jvmResourcesDir = project.layout.buildDirectory.dir("generated/kne/jvmResources")
         val cinteropDefDir = project.layout.buildDirectory.dir("generated/kne/cinterop")
@@ -144,6 +146,7 @@ class KotlinNativeExportPlugin : Plugin<Project> {
             taskBridgeMode.set(bridgeMode)
             jdkIncludeDir?.let { taskJdkIncludeDir.set(it.absolutePath) }
             taskOutputDir.set(nativeBridgesDir)
+            taskAndroidNativeOutputDir.set(androidNativeBridgesDir)
             taskJvmOutputDir.set(jvmProxiesDir)
             taskJvmResourcesDir.set(jvmResourcesDir)
             taskCinteropDir.set(cinteropDefDir)
@@ -153,71 +156,81 @@ class KotlinNativeExportPlugin : Plugin<Project> {
         // Keep old task name as alias
         project.tasks.register("generateKneJvmProxies") { dependsOn(generateBridges) }
 
-        // Required for generated suspend/Flow bridges. Always added by Maven
-        // coordinates — never look up the consumer's version catalog. Alias
-        // names in libs.versions.toml are project-local and must not be required.
-        val coroutinesVersion = DEFAULT_COROUTINES_VERSION
-
-        nativeTarget?.let { target ->
-            kotlin.sourceSets.findByName("${target.name}Main")?.dependencies {
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion")
-            }
-        }
-        kotlin.sourceSets.findByName("nativeMain")?.dependencies {
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion")
-        }
-
-        kotlin.sourceSets.findByName(jvmMainSourceSetName)?.dependencies {
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:$coroutinesVersion")
-        }
-        kotlin.sourceSets.findByName(jvmTestSourceSetName)?.dependencies {
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:$coroutinesVersion")
-        }
+        // NOTE: the plugin deliberately does NOT inject dependencies (e.g. kotlinx-coroutines)
+        // into the consumer's source sets — silently added versions are hard to debug and can
+        // conflict with the versions the project already uses. The generated code only needs
+        // kotlinx-coroutines when the API declares suspend/Flow members (its imports are
+        // generated conditionally, and the worker logs a reminder in that case). Consumers
+        // declare it explicitly, e.g.:
+        //   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:<version>")
+        // on nativeMain / jvmMain / androidMain (and on test source sets if their code uses it).
 
         // ── JNI mode: register the jni.h cinterop used by the native bridge ──
         // The generated native code imports `dev.nucleusframework.knejni.*` to talk
         // to JNIEnv; in FFM mode no cinterop is registered and no import is generated.
         if (bridgeMode == "jni") {
-            nativeTarget?.let { target ->
-                val defFilePath = cinteropDefDir.get().asFile.resolve("knejni.def")
-                target.compilations.getByName("main") {
-                    cinterops {
-                        create("knejni") {
-                            defFile = defFilePath
+            // Desktop native targets compile the bridge against the local JDK's jni.h.
+            // androidNative targets are excluded: Kotlin/Native ships JNI bindings built in
+            // (`platform.android`), and their bridge variant imports those instead.
+            kotlin.targets.filterIsInstance<KotlinNativeTarget>()
+                .filter { it.konanTarget.family != Family.ANDROID }
+                .forEach { target ->
+                    val defFilePath = cinteropDefDir.get().asFile.resolve("knejni.def")
+                    target.compilations.getByName("main") {
+                        cinterops {
+                            create("knejni") {
+                                defFile = defFilePath
+                            }
                         }
                     }
                 }
-            }
             // The def file is produced by the generation task
             project.tasks.configureEach {
                 if (name.startsWith("cinteropKnejni")) dependsOn(generateBridges)
             }
         }
 
-        // Wire generated bridges into the native source set (try nativeMain, fall back to <target>Main)
-        val nativeSourceSet = kotlin.sourceSets.findByName("nativeMain")
-            ?: nativeTarget?.let { kotlin.sourceSets.findByName("${it.name}Main") }
-        nativeSourceSet?.kotlin?.srcDir(nativeBridgesDir)
+        // Wire generated bridges. androidNative targets must not see the desktop bridge (they have
+        // no knejni cinterop — their variant imports the built-in `platform.android`), so when they
+        // exist each family compiles its own variant from its own per-target source set; desktop
+        // -only projects keep the old nativeMain-first wiring.
+        val androidNativeTargets = kotlin.targets.filterIsInstance<KotlinNativeTarget>()
+            .filter { it.konanTarget.family == Family.ANDROID }
+        if (androidNativeTargets.isEmpty()) {
+            val nativeSourceSet = kotlin.sourceSets.findByName("nativeMain")
+                ?: nativeTarget?.let { kotlin.sourceSets.findByName("${it.name}Main") }
+            nativeSourceSet?.kotlin?.srcDir(nativeBridgesDir)
+        } else {
+            kotlin.targets.filterIsInstance<KotlinNativeTarget>()
+                .filter { it.konanTarget.family != Family.ANDROID }
+                .forEach { target ->
+                    kotlin.sourceSets.findByName("${target.name}Main")?.kotlin?.srcDir(nativeBridgesDir)
+                }
+            androidNativeTargets.forEach { target ->
+                kotlin.sourceSets.findByName("${target.name}Main")?.kotlin?.srcDir(androidNativeBridgesDir)
+            }
+        }
 
         // Wire generated JVM proxies into jvmMain
         kotlin.sourceSets.findByName(jvmMainSourceSetName)?.kotlin?.srcDir(jvmProxiesDir)
+        // AGP Android (ART) target: the same external-fun proxies run there (minSdk 26+;
+        // Cleaner). GraalVM metadata stays JVM-desktop-only. The consumer declares coroutines
+        // on androidMain themselves — see the no-injection note above.
+        kotlin.sourceSets.findByName("androidMain")?.kotlin?.srcDir(jvmProxiesDir)
 
         // Wire generated GraalVM metadata into JVM resources
         kotlin.sourceSets.findByName(jvmMainSourceSetName)?.resources?.srcDir(jvmResourcesDir)
 
-        // Ensure compilation waits for generation
-        project.tasks.filter { task ->
-            val name = task.name
-            val isCompileKotlinOrNative = task.name.startsWith("compileKotlin") &&
-                (task.name.contains("Native", ignoreCase = true) || task.name.contains(
-                    nativeTargetTaskName,
-                    ignoreCase = true
-                ))
-
-            val isJvmTask = name == "compileKotlin$jvmTaskName" || name == "compileKotlin$jvmMainTaskName"
-            isJvmTask || isCompileKotlinOrNative
-        }.forEach { task ->
-            task.dependsOn(generateBridges)
+        // Ensure every consumer compilation waits for generation: native compiles, JVM compiles,
+        // and AGP Android (androidLibrary) compiles. Lazy so late-registered AGP tasks are covered.
+        project.tasks.configureEach {
+            val isCompile = name.startsWith("compile") &&
+                (name.contains("Native", ignoreCase = true) ||
+                    name.contains("Android", ignoreCase = true) ||
+                    name.contains(nativeTargetTaskName, ignoreCase = true) ||
+                    name == "compileKotlin$jvmTaskName" ||
+                    name == "compileKotlin$jvmMainTaskName")
+            if (isCompile) dependsOn(generateBridges)
         }
 
         // ── Native binaries (both debug + release, like swift-java) ──────────
@@ -376,7 +389,6 @@ class KotlinNativeExportPlugin : Plugin<Project> {
     }
 
     companion object {
-        private const val DEFAULT_COROUTINES_VERSION = "1.11.0"
         private const val BRIDGE_MODE_PROPERTY = "kne.bridgeMode"
         private val BRIDGE_MODES = listOf("ffm", "jni")
 

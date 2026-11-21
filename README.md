@@ -499,6 +499,7 @@ The generated FFM proxies require:
 - **FFM mode**: JDK 22+ (FFM API finalized in JDK 22 via [JEP 454](https://openjdk.org/jeps/454), recommended JDK 25)
 - **JNI mode**: JDK 8+ (no `java.lang.foreign` APIs used), Android API 26+
 - **`--enable-native-access=ALL-UNNAMED`** JVM arg (FFM mode only; auto-configured for tests by the plugin)
+- **kotlinx-coroutines** (your project declares it): the generated code only references coroutines when your API declares suspend/Flow members &mdash; the plugin never injects dependencies, so add `org.jetbrains.kotlinx:kotlinx-coroutines-core` to the source sets that consume the generated code (nativeMain / jvmMain / androidMain)
 
 The native library is automatically bundled in the JAR and extracted at runtime &mdash; no manual `java.library.path` configuration needed.
 

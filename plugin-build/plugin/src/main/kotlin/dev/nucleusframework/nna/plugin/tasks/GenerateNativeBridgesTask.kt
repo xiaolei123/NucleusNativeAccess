@@ -64,6 +64,10 @@ abstract class GenerateNativeBridgesTask : DefaultTask() {
     @get:OutputDirectory
     abstract val taskOutputDir: DirectoryProperty
 
+    /** JNI mode: bridge variant for androidNative targets (built-in `platform.android` bindings). */
+    @get:OutputDirectory
+    abstract val taskAndroidNativeOutputDir: DirectoryProperty
+
     @get:OutputDirectory
     abstract val taskJvmOutputDir: DirectoryProperty
 
@@ -86,7 +90,7 @@ abstract class GenerateNativeBridgesTask : DefaultTask() {
     fun generate() {
         val ktFiles = taskNativeSources.orderedKotlinFiles()
         if (ktFiles.isEmpty()) {
-            listOf(taskOutputDir, taskJvmOutputDir, taskJvmResourcesDir).forEach {
+            listOf(taskOutputDir, taskAndroidNativeOutputDir, taskJvmOutputDir, taskJvmResourcesDir).forEach {
                 it.get().asFile.apply { deleteRecursively(); mkdirs() }
             }
             logger.lifecycle("kne: No Kotlin sources found, skipping."); return
@@ -110,6 +114,7 @@ abstract class GenerateNativeBridgesTask : DefaultTask() {
             jvmPackage.set(taskJvmPackage)
             bridgeMode.set(taskBridgeMode)
             nativeBridgesDir.set(taskOutputDir)
+            androidNativeBridgesDir.set(taskAndroidNativeOutputDir)
             jvmProxiesDir.set(taskJvmOutputDir)
             jvmResourcesDir.set(taskJvmResourcesDir)
             cacheFile.set(taskCacheDir.file("parse-cache.bin"))

@@ -7,6 +7,7 @@ import dev.nucleusframework.nna.plugin.codegen.JniProxyGenerator
 import dev.nucleusframework.nna.plugin.codegen.generateGraalVmMetadataJni
 import dev.nucleusframework.nna.plugin.codegen.NativeBridgeGenerator
 import dev.nucleusframework.nna.plugin.ir.KneModule
+import dev.nucleusframework.nna.plugin.ir.KneType
 import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
@@ -36,6 +37,8 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
         /** Bridge backend: "ffm" (default) or "jni". */
         val bridgeMode: Property<String>
         val nativeBridgesDir: DirectoryProperty
+        /** JNI mode: bridge variant importing the built-in `platform.android` JNI bindings (androidNative targets). */
+        val androidNativeBridgesDir: DirectoryProperty
         val jvmProxiesDir: DirectoryProperty
         val jvmResourcesDir: DirectoryProperty
         val cacheFile: RegularFileProperty
@@ -63,8 +66,24 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
             module.packages.firstOrNull() ?: ""
         }
 
+        // The generated code only references kotlinx.coroutines when the API uses suspend/Flow
+        // (imports are emitted conditionally). The plugin never injects dependencies, so remind
+        // the user to declare coroutines explicitly where the generated code is consumed.
+        val usesSuspendOrFlow = module.classes.any { c ->
+            c.methods.any { it.isSuspend || it.returnType is KneType.FLOW } ||
+                c.companionMethods.any { it.isSuspend || it.returnType is KneType.FLOW }
+        } || module.functions.any { it.isSuspend || it.returnType is KneType.FLOW }
+        if (usesSuspendOrFlow) {
+            logger.lifecycle(
+                "kne: API uses suspend/Flow — the generated code needs kotlinx-coroutines; " +
+                    "declare it explicitly on the source sets consuming the generated code " +
+                    "(nativeMain / jvmMain / androidMain), e.g. \"org.jetbrains.kotlinx:kotlinx-coroutines-core\""
+            )
+        }
+
         val roots = mapOf(
             NATIVE_BRIDGES to parameters.nativeBridgesDir.get().asFile,
+            ANDROID_BRIDGES to parameters.androidNativeBridgesDir.get().asFile,
             JVM_PROXIES to parameters.jvmProxiesDir.get().asFile,
             JVM_RESOURCES to parameters.jvmResourcesDir.get().asFile,
         )
@@ -91,6 +110,7 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
     private fun generate(module: KneModule, jvmPackage: String, bridgeMode: String): Map<String, Map<String, String>> {
         val outputs = mapOf(
             NATIVE_BRIDGES to LinkedHashMap<String, String>(),
+            ANDROID_BRIDGES to LinkedHashMap(),
             JVM_PROXIES to LinkedHashMap(),
             JVM_RESOURCES to LinkedHashMap(),
         )
@@ -101,7 +121,16 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
             // JNI backend: RegisterNatives-based bridges + external fun proxies.
             // The JVM package must be forwarded: proxies are generated flat inside it, so every
             // native-side FindClass / method descriptor is derived from that package.
-            outputs.getValue(NATIVE_BRIDGES)["kne_bridges.kt"] = JniNativeBridgeGenerator().generate(module, jvmPackage)
+            val nativeBridge = JniNativeBridgeGenerator().generate(module, jvmPackage)
+            outputs.getValue(NATIVE_BRIDGES)["kne_bridges.kt"] = nativeBridge
+
+            // androidNative targets have no knejni cinterop — they use the JNI bindings shipped
+            // with Kotlin/Native's `platform.android`. Both wrap the same jni.h, so the body is
+            // identical except for two cinterop naming differences of the NDK header: the import
+            // package and the function-table struct (`JNINativeInterface`, no trailing underscore).
+            outputs.getValue(ANDROID_BRIDGES)["kne_bridges.kt"] = nativeBridge
+                .replaceFirst("import dev.nucleusframework.knejni.*", "import platform.android.*")
+                .replaceFirst("JNINativeInterface_", "JNINativeInterface")
 
             if (jvmPackage.isNotEmpty()) {
                 val pkgPath = jvmPackage.replace('.', '/')
@@ -218,6 +247,7 @@ $downcallEntries
 
     private companion object {
         const val NATIVE_BRIDGES = "nativeBridges"
+        const val ANDROID_BRIDGES = "androidNativeBridges"
         const val JVM_PROXIES = "jvmProxies"
         const val JVM_RESOURCES = "jvmResources"
     }

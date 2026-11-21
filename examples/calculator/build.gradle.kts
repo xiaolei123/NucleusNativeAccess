@@ -21,9 +21,30 @@ kotlin {
         else -> error("Unsupported host OS: $hostOs")
     }
 
+    // Android device target: the .so lands in jniLibs/arm64-v8a/ for APK bundling
+    for (target in listOf(
+        androidNativeArm64(),
+        androidNativeArm32(),
+        androidNativeX64(),
+    )) {
+        target.binaries {
+            sharedLib {
+                baseName = "calculator"
+            }
+        }
+    }
+
     jvm()
 
     sourceSets {
+        commonMain.dependencies {
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
+        }
+        // The plugin does not inject dependencies: the API uses suspend/Flow, so the generated
+        // bridges and proxies reference kotlinx.coroutines — declare it on every consumer.
+        nativeMain.dependencies {
+
+        }
         jvmMain {
             dependencies {
                 implementation(compose.desktop.currentOs)

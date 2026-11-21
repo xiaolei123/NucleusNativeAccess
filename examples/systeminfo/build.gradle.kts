@@ -67,6 +67,11 @@ kotlin {
     jvm()
 
     sourceSets {
+        // The plugin does not inject dependencies: the native API has suspend/Flow members, so
+        // the generated bridge references kotlinx.coroutines — declare it on the native side.
+        commonMain.dependencies {
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
+        }
         jvmMain {
             dependencies {
                 implementation(compose.desktop.currentOs)
