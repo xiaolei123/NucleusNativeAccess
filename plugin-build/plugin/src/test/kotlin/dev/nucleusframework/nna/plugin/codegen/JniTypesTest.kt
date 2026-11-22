@@ -147,9 +147,12 @@ class JniProxyGeneratorTest {
     }
 
     @Test
-    fun `exception class matches the FFM backend`() {
+    fun `exception class matches the shared shape`() {
         val files = generate()
         val exception = files.getValue("KotlinNativeException.kt")
-        assertTrue(exception.contains("class KotlinNativeException(message: String) : RuntimeException(message)"))
+        // KotlinPoet renders the ctor parameter on its own line with an explicit `public`.
+        assertTrue(exception.contains("class KotlinNativeException("))
+        assertTrue(exception.contains("message: String"))
+        assertTrue(exception.contains(": RuntimeException(message)"))
     }
 }

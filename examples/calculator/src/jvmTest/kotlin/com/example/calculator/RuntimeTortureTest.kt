@@ -17,7 +17,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** Torture tests for the generated FFM runtime: buffers, errors, lifecycle, coroutines. */
+/** Torture tests for the generated JNI runtime: buffers, errors, lifecycle, coroutines. */
 class RuntimeTortureTest {
 
     // ══════════════════════════════════════════════════════════════════════════

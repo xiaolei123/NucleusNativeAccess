@@ -16,7 +16,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** Extreme values, races and deadlock probes on verbatim JVM enums / data classes crossing FFM. */
+/** Extreme values, races and deadlock probes on verbatim JVM enums / data classes crossing JNI. */
 class ValueTypeTortureTest {
 
     private val extremes = listOf(Int.MIN_VALUE, Int.MIN_VALUE + 1, -1, 0, 1, Int.MAX_VALUE - 1, Int.MAX_VALUE)

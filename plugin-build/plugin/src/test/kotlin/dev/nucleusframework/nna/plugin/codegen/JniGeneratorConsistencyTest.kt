@@ -90,7 +90,7 @@ class JniGeneratorConsistencyTest {
 
     @Test
     fun `every registered native exists as an external fun on the resolved class`() {
-        val native = JniNativeBridgeGenerator().generate(module(), "demo")
+        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
         val proxies = JniProxyGenerator().generate(module(), "demo")
 
         val registrations = parseRegistrations(native)
@@ -117,7 +117,7 @@ class JniGeneratorConsistencyTest {
 
     @Test
     fun `registered classes use the flat proxy class name`() {
-        val native = JniNativeBridgeGenerator().generate(module(), "demo")
+        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
         val targets = parseRegistrations(native).keys
 
         assertTrue("nested class must be addressed by its flattened proxy name", targets.any { it.endsWith("/Calc_Adder") })
@@ -127,7 +127,7 @@ class JniGeneratorConsistencyTest {
 
     @Test
     fun `classes without jvm natives are only cached, never registered`() {
-        val native = JniNativeBridgeGenerator().generate(module(), "demo")
+        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
         val targets = parseRegistrations(native).keys
 
         // Enums and sealed bases have no `external fun` on the JVM side, so binding anything to
@@ -141,14 +141,14 @@ class JniGeneratorConsistencyTest {
 
     @Test
     fun `bootstrap rethrows instead of silently swallowing failures`() {
-        val native = JniNativeBridgeGenerator().generate(module(), "demo")
+        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
         assertTrue("bootstrap must rethrow registration failures", native.contains("throw e"))
         assertTrue("bootstrap must print what failed", native.contains("BOOTSTRAP FAILED"))
     }
 
     @Test
     fun `nullable data class param ships its isNull flag with 1 meaning null`() {
-        val native = JniNativeBridgeGenerator().generate(module(), "demo")
+        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
         val proxies = JniProxyGenerator().generate(module(), "demo")
 
         // Native reads the flag as `_isNull`, so the JVM side must send 1 for null.
@@ -177,7 +177,7 @@ class JniGeneratorConsistencyTest {
                 )
             },
         )
-        val native = JniNativeBridgeGenerator().generate(withLambda, "demo")
+        val native = JniNativeBridgeGenerator.desktop().generate(withLambda, "demo")
         val proxies = JniProxyGenerator().generate(withLambda, "demo")
 
         val id = JniTypes.functionId(KneType.FUNCTION(listOf(KneType.INT), KneType.UNIT))
@@ -192,7 +192,7 @@ class JniGeneratorConsistencyTest {
 
     @Test
     fun `extension functions register on the flat KneExt with matching parameter order`() {
-        val native = JniNativeBridgeGenerator().generate(module(), "demo")
+        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
         val proxies = JniProxyGenerator().generate(module(), "demo")
 
         assertTrue("extension host must be the flat KneExt class", native.contains("\"demo/KneExt\""))
@@ -204,6 +204,27 @@ class JniGeneratorConsistencyTest {
             "JVM declaration must take the receiver handle first",
             proxies.getValue("Extensions.kt").contains("_kneExtExtended(receiverHandle: Long, v: Int)"),
         )
+    }
+
+    @Test
+    fun `android variant registers the same natives against the platform android surface`() {
+        val desktop = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
+        val android = JniNativeBridgeGenerator.android().generate(module(), "demo")
+
+        // Import surface follows the binding flavor (per-type imports, no star imports).
+        assertTrue("desktop must bind the knejni cinterop surface", desktop.contains("import dev.nucleusframework.knejni."))
+        assertTrue("desktop must not touch the android surface", !desktop.contains("platform.android"))
+        assertTrue("android must bind the platform.android surface", android.contains("import platform.android."))
+        assertTrue("android must not touch the knejni surface", !android.contains("knejni"))
+
+        // Function-table struct: the NDK header has no trailing underscore.
+        assertTrue(desktop.contains("JNINativeInterface_"))
+        assertTrue("NDK struct has no trailing underscore", !android.contains("JNINativeInterface_"))
+        assertTrue(android.contains("import platform.android.JNINativeInterface\n"))
+
+        // Registration parity: both variants bind exactly the same natives on the same classes,
+        // so one JVM proxy set serves both native families.
+        assertEquals(parseRegistrations(desktop), parseRegistrations(android))
     }
 
     // ── parsing helpers ──────────────────────────────────────────────────────

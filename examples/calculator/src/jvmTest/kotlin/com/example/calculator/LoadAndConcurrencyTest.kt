@@ -8,7 +8,7 @@ import kotlin.test.assertTrue
 class LoadAndConcurrencyTest {
 
     // ══════════════════════════════════════════════════════════════════════════
-    // CONCURRENCY & HIGH-LOAD STRESS TESTS (100K+ FFM calls)
+    // CONCURRENCY & HIGH-LOAD STRESS TESTS (100K+ JNI calls)
     // ══════════════════════════════════════════════════════════════════════════
 
     @Test fun `load - 100K add calls single instance`() {

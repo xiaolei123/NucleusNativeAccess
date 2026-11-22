@@ -95,7 +95,6 @@ composeCompiler {
 kotlinNativeExport {
     nativeLibName = "systeminfo"
     nativePackage = "com.example.systeminfo"
-    bridgeMode = "jni"
 }
 
 nucleus.application {
@@ -122,7 +121,7 @@ nucleus.application {
         appName = "Native System Info"
         packageName = "com.example.systeminfo"
         packageVersion = "1.0.0"
-        description = "System info & notifications via Kotlin/Native + FFM"
+        description = "System info & notifications via Kotlin/Native + JNI"
 
         linux { debMaintainer = "dev@example.com" }
         macOS { bundleID = "com.example.systeminfo"; dockName = "SystemInfo" }

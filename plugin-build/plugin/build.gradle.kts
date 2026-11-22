@@ -7,8 +7,11 @@ dependencies {
     // kotlin-compiler-embeddable for PSI parsing (compileOnly — loaded at runtime via isolated Worker classloader)
     compileOnly(libs.kotlin.compiler.embeddable)
     compileOnly(libs.kotlin.gradle.plugin)
+    // KotlinPoet for code generation (compileOnly — resolved into the Worker classpath via knePsiScope at runtime)
+    compileOnly(libs.kotlinpoet)
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.compiler.embeddable)
+    testImplementation(libs.kotlinpoet)
     testImplementation(gradleTestKit())
 }
 

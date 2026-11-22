@@ -8,7 +8,7 @@ import kotlin.test.assertTrue
 
 class DataClassTest {
 
-    // Data classes (value marshalling across FFM boundary)
+    // Data classes (value marshalling across JNI boundary)
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Test

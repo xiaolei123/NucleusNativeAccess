@@ -28,5 +28,4 @@ kotlin {
 kotlinNativeExport {
     nativeLibName = "benchmark"
     nativePackage = "com.example.benchmark"
-    bridgeMode = "jni"
 }

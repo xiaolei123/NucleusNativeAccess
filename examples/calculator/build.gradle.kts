@@ -68,7 +68,6 @@ composeCompiler {
 kotlinNativeExport {
     nativeLibName = "calculator"
     nativePackage = "com.example.calculator"
-    bridgeMode = "jni"
 }
 
 nucleus.application {
@@ -95,7 +94,7 @@ nucleus.application {
         appName = "Native Calculator"
         packageName = "com.example.nativecalculator"
         packageVersion = "1.0.0"
-        description = "Compose Desktop calculator powered by Kotlin/Native via FFM"
+        description = "Compose Desktop calculator powered by Kotlin/Native via JNI"
         homepage = "https://github.com/kdroidFilter/KotlinNativeExport"
 
         linux {

@@ -1,11 +1,9 @@
 package dev.nucleusframework.nna.plugin.analysis
 
-import dev.nucleusframework.nna.plugin.codegen.FfmProxyGenerator
 import dev.nucleusframework.nna.plugin.codegen.GeneratedOutputs
 import dev.nucleusframework.nna.plugin.codegen.JniNativeBridgeGenerator
 import dev.nucleusframework.nna.plugin.codegen.JniProxyGenerator
 import dev.nucleusframework.nna.plugin.codegen.generateGraalVmMetadataJni
-import dev.nucleusframework.nna.plugin.codegen.NativeBridgeGenerator
 import dev.nucleusframework.nna.plugin.ir.KneModule
 import dev.nucleusframework.nna.plugin.ir.KneType
 import org.gradle.api.file.ConfigurableFileCollection
@@ -34,8 +32,6 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
         val commonSourceFiles: ConfigurableFileCollection
         val libName: Property<String>
         val jvmPackage: Property<String>
-        /** Bridge backend: "ffm" (default) or "jni". */
-        val bridgeMode: Property<String>
         val nativeBridgesDir: DirectoryProperty
         /** JNI mode: bridge variant importing the built-in `platform.android` JNI bindings (androidNative targets). */
         val androidNativeBridgesDir: DirectoryProperty
@@ -52,7 +48,6 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
         val commonFiles = parameters.commonSourceFiles.files
         val sources = parameters.sourceFiles.files.map { PsiSourceParser.Source(it, isCommon = it in commonFiles) }
         val libName = parameters.libName.get()
-        val bridgeMode = parameters.bridgeMode.get()
         val cacheFile = parameters.cacheFile.get().asFile
         val cacheKey = parameters.cacheKey.get()
         val previous = ParseCache.read(cacheFile, cacheKey)
@@ -88,13 +83,13 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
             JVM_RESOURCES to parameters.jvmResourcesDir.get().asFile,
         )
         val snapshot = previous?.codegen
-        val codegen = if (snapshot != null && snapshot.matches(module, jvmPackage, bridgeMode) && GeneratedOutputs.hashes(roots) == snapshot.outputHashes) {
+        val codegen = if (snapshot != null && snapshot.matches(module, jvmPackage) && GeneratedOutputs.hashes(roots) == snapshot.outputHashes) {
             logger.lifecycle("kne: API unchanged, generated sources are up to date")
             snapshot
         } else {
-            val sync = GeneratedOutputs.sync(roots, generate(module, jvmPackage, bridgeMode))
+            val sync = GeneratedOutputs.sync(roots, generate(module, jvmPackage))
             logger.lifecycle("kne: Updated ${sync.written} and deleted ${sync.deleted} generated file(s)")
-            CodegenSnapshot(module, module.packages.toList(), jvmPackage, bridgeMode, sync.hashes)
+            CodegenSnapshot(module, module.packages.toList(), jvmPackage, sync.hashes)
         }
 
         try {
@@ -107,7 +102,7 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
     }
 
     /** Generates every output file from the module, grouped by output root. */
-    private fun generate(module: KneModule, jvmPackage: String, bridgeMode: String): Map<String, Map<String, String>> {
+    private fun generate(module: KneModule, jvmPackage: String): Map<String, Map<String, String>> {
         val outputs = mapOf(
             NATIVE_BRIDGES to LinkedHashMap<String, String>(),
             ANDROID_BRIDGES to LinkedHashMap(),
@@ -117,45 +112,22 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
         val hasApi = module.classes.isNotEmpty() || module.enums.isNotEmpty() || module.functions.isNotEmpty()
         if (!hasApi) return outputs
 
-        if (bridgeMode == "jni") {
-            // JNI backend: RegisterNatives-based bridges + external fun proxies.
-            // The JVM package must be forwarded: proxies are generated flat inside it, so every
-            // native-side FindClass / method descriptor is derived from that package.
-            val nativeBridge = JniNativeBridgeGenerator().generate(module, jvmPackage)
-            outputs.getValue(NATIVE_BRIDGES)["kne_bridges.kt"] = nativeBridge
+        // JNI backend (the only backend): RegisterNatives-based bridges + external fun proxies.
+        // The JVM package must be forwarded: proxies are generated flat inside it, so every
+        // native-side FindClass / method descriptor is derived from that package.
+        outputs.getValue(NATIVE_BRIDGES)["kne_bridges.kt"] = JniNativeBridgeGenerator.desktop().generate(module, jvmPackage)
 
-            // androidNative targets have no knejni cinterop — they use the JNI bindings shipped
-            // with Kotlin/Native's `platform.android`. Both wrap the same jni.h, so the body is
-            // identical except for two cinterop naming differences of the NDK header: the import
-            // package and the function-table struct (`JNINativeInterface`, no trailing underscore).
-            outputs.getValue(ANDROID_BRIDGES)["kne_bridges.kt"] = nativeBridge
-                .replaceFirst("import dev.nucleusframework.knejni.*", "import platform.android.*")
-                .replaceFirst("JNINativeInterface_", "JNINativeInterface")
+        // androidNative targets have no knejni cinterop — they use the JNI bindings shipped
+        // with Kotlin/Native's `platform.android`. The generator emits each variant for its
+        // own binding surface (import package + function-table struct name); no post-processing.
+        outputs.getValue(ANDROID_BRIDGES)["kne_bridges.kt"] = JniNativeBridgeGenerator.android().generate(module, jvmPackage)
 
-            if (jvmPackage.isNotEmpty()) {
-                val pkgPath = jvmPackage.replace('.', '/')
-                JniProxyGenerator().generate(module, jvmPackage).forEach { (filename, content) ->
-                    outputs.getValue(JVM_PROXIES)["$pkgPath/$filename"] = content
-                }
-                generateGraalVmMetadataJni(outputs.getValue(JVM_RESOURCES), module, jvmPackage)
-            }
-            return outputs
-        }
-
-        // FFM backend (default)
-        // Native bridges
-        outputs.getValue(NATIVE_BRIDGES)["kne_bridges.kt"] = NativeBridgeGenerator().generate(module)
-
-        // JVM proxies + GraalVM metadata
         if (jvmPackage.isNotEmpty()) {
             val pkgPath = jvmPackage.replace('.', '/')
-            val generator = FfmProxyGenerator()
-            generator.generate(module, jvmPackage).forEach { (filename, content) ->
+            JniProxyGenerator().generate(module, jvmPackage).forEach { (filename, content) ->
                 outputs.getValue(JVM_PROXIES)["$pkgPath/$filename"] = content
             }
-
-            // Generate GraalVM reachability metadata for native-image support
-            generateGraalVmMetadata(outputs.getValue(JVM_RESOURCES), module, jvmPackage, generator)
+            generateGraalVmMetadataJni(outputs.getValue(JVM_RESOURCES), module, jvmPackage)
         }
         return outputs
     }
@@ -164,87 +136,6 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
      * Generates GraalVM reachability metadata under META-INF/native-image/kne/.
      * Includes reflection config, resource config, and FFM foreign downcall/upcall descriptors.
      */
-    private fun generateGraalVmMetadata(
-        resources: MutableMap<String, String>,
-        module: KneModule,
-        jvmPackage: String,
-        generator: FfmProxyGenerator,
-    ) {
-        val metaDir = "META-INF/native-image/kne/${module.libName}"
-
-        // Collect all generated class FQNs for reflection
-        val classNames = mutableListOf<String>()
-        classNames.add("$jvmPackage.KneRuntime")
-        classNames.add("$jvmPackage.KotlinNativeException")
-        module.classes.forEach { classNames.add("$jvmPackage.${it.simpleName}") }
-        module.dataClasses.filter { !it.isCommon }.forEach { classNames.add("$jvmPackage.${it.simpleName}") }
-        module.enums.forEach { classNames.add("$jvmPackage.${it.simpleName}") }
-        if (module.functions.isNotEmpty()) {
-            classNames.add("$jvmPackage.${module.libName.replaceFirstChar { it.uppercaseChar() }}")
-        }
-
-        // Collect FFM downcall descriptors
-        val downcalls = generator.collectGraalVmDowncalls(module)
-
-        // reflect-config.json
-        val reflectEntries = classNames.joinToString(",\n") { name ->
-            """  {
-    "name": "$name",
-    "allDeclaredConstructors": true,
-    "allDeclaredMethods": true,
-    "allDeclaredFields": true
-  }"""
-        }
-        resources["$metaDir/reflect-config.json"] = "[\n$reflectEntries\n]\n"
-
-        // resource-config.json
-        resources["$metaDir/resource-config.json"] = """{
-  "resources": {
-    "includes": [
-      { "pattern": "\\QjniLibs/\\E.*" }
-    ]
-  }
-}
-"""
-
-        // reachability-metadata.json — FFM foreign downcall + upcall descriptors
-        fun formatEntries(descriptors: Set<Pair<List<String>, String?>>): String =
-            descriptors.joinToString(",\n") { (params, ret) ->
-                val paramStr = params.joinToString(", ") { "\"$it\"" }
-                val retStr = ret ?: "void"
-                """      { "parameterTypes": [$paramStr], "returnType": "$retStr" }"""
-            }
-
-        val downcallEntries = formatEntries(downcalls)
-
-        // Collect FFM upcall descriptors (suspend/flow stubs + lambda callbacks)
-        val upcalls = generator.collectGraalVmUpcalls(module)
-        val upcallSection = if (upcalls.isNotEmpty()) {
-            val upcallEntries = formatEntries(upcalls)
-            """,
-    "upcalls": [
-$upcallEntries
-    ]"""
-        } else {
-            ""
-        }
-
-        resources["$metaDir/reachability-metadata.json"] = """{
-  "reflection": [
-${classNames.joinToString(",\n") { """    { "type": "$it", "allDeclaredConstructors": true, "allDeclaredMethods": true }""" }}
-  ],
-  "resources": [
-    { "glob": "jniLibs/**" }
-  ],
-  "foreign": {
-    "downcalls": [
-$downcallEntries
-    ]$upcallSection
-  }
-}
-"""
-    }
-
     private companion object {
         const val NATIVE_BRIDGES = "nativeBridges"
         const val ANDROID_BRIDGES = "androidNativeBridges"

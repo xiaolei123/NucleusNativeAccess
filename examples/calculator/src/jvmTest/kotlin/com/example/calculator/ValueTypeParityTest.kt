@@ -21,7 +21,7 @@ class ValueTypeParityTest {
     }
 
     @Test
-    fun `enum with bodies crosses FFM as param`() {
+    fun `enum with bodies crosses JNI as param`() {
         Calculator(10).use { calc ->
             for (op in BinaryOp.entries) {
                 val expected = op.apply(calc.current, 3)
@@ -31,7 +31,7 @@ class ValueTypeParityTest {
     }
 
     @Test
-    fun `enum with bodies crosses FFM as return`() {
+    fun `enum with bodies crosses JNI as return`() {
         Calculator(1).use { assertEquals(BinaryOp.PLUS, it.lastBinaryOp()) }
         Calculator(-1).use { assertEquals(BinaryOp.MINUS, it.lastBinaryOp()) }
     }
@@ -51,7 +51,7 @@ class ValueTypeParityTest {
     }
 
     @Test
-    fun `data class with body crosses FFM`() {
+    fun `data class with body crosses JNI`() {
         Calculator(3).use { calc ->
             val v = calc.toVector()
             assertEquals(Vector(3, 6), v)

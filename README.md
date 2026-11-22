@@ -4,7 +4,7 @@
 
 A Gradle plugin that lets you use **Kotlin/Native code directly from the JVM** as if it were a regular JVM library. Classes, methods, properties, enums, nullable types, companion objects, exception propagation, callbacks &mdash; everything is transparent to the JVM developer.
 
-Under the hood, the plugin generates [FFM (Foreign Function & Memory API)](https://openjdk.org/jeps/454) bindings inspired by [swift-java](https://github.com/swiftlang/swift-java) and [swift-export-standalone](https://github.com/JetBrains/kotlin/tree/master/native/swift/swift-export-standalone).
+Under the hood, the plugin generates JNI bindings via `RegisterNatives` + `external fun` proxies, inspired by [swift-java](https://github.com/swiftlang/swift-java) and [swift-export-standalone](https://github.com/JetBrains/kotlin/tree/master/native/swift/swift-export-standalone). The generated code uses no `java.lang.foreign` APIs, so it runs on JDK 8+ and Android JVMs (API 26+).
 
 ## How it works
 
@@ -13,8 +13,8 @@ Kotlin/Native source           Plugin generates              JVM developer sees
 ──────────────────            ────────────────              ──────────────────
 class Calculator {      →     @CName bridges (native)   →   class Calculator : AutoCloseable {
   fun add(value: Int)         + StableRef lifecycle           fun add(value: Int): Int
-  val current: Int            + FFM MethodHandles             val current: Int
-}                             + output-buffer strings         // backed by native, via FFM
+  val current: Int            + RegisterNatives bootstrap     val current: Int
+}                             + output-buffer strings         // backed by native, via JNI external fun
                                                           }
 ```
 
@@ -22,11 +22,11 @@ class Calculator {      →     @CName bridges (native)   →   class Calculator
 
 1. Plugin parses your `nativeMain` sources via Kotlin PSI and extracts the public API
 2. Generates `@CName` bridge functions with `StableRef` for object lifecycle (native side)
-3. Generates JVM proxy classes with FFM `MethodHandle` downcalls (JVM side)
+3. Generates JVM proxy classes with `external fun` downcalls (JVM side)
 4. Compiles to a shared library (`.so` / `.dylib` / `.dll`)
 5. Bundles the native library into the JAR under `jniLibs/{platform}/` (standard Android ABI names like `arm64-v8a` for androidNative targets, `{os}-{arch}` like `win32-x64` for desktop)
-6. Generates GraalVM reachability metadata (reflection, resources, FFM downcall descriptors)
-7. JVM code calls the proxies transparently &mdash; every call crosses the FFM boundary into native
+6. Generates GraalVM reachability metadata (reflection, resources, JNI config)
+7. JVM code calls the proxies transparently &mdash; every call crosses the JNI boundary into native
 
 ## Quick start
 
@@ -54,7 +54,7 @@ plugins {
 
 ```kotlin
 kotlin {
-    jvmToolchain(25) // FFM is stable since JDK 22 (JEP 454), recommended JDK 25
+    jvmToolchain(25) // JDK 8+ required by the generated code; 25 recommended
 
     linuxX64()       // use the real platform name (KMP convention)
     // macosArm64()  // on macOS
@@ -103,7 +103,7 @@ package com.example
 
 fun main() {
     val calc = Calculator(0)  // allocates a Kotlin/Native object
-    calc.add(5)               // FFM → native → StableRef → add()
+    calc.add(5)               // JNI → native → StableRef → add()
     calc.add(3)
     println(calc.current)     // 8
     println(calc.describe())  // "Calculator(current=8)"
@@ -122,9 +122,9 @@ No JNI. No annotations. No boilerplate. Just write Kotlin/Native and use it from
 
 ## What's supported
 
-### Types — test coverage (1700+ end-to-end FFM tests)
+### Types — test coverage (1700+ end-to-end JNI tests)
 
-Every test compiles Kotlin/Native → `libcalculator.so` (470+ exported symbols) → loads via FFM `MethodHandle` → verifies on JVM. Zero mocks — all 1700+ tests cross the real native boundary. Includes load tests (500K+ FFM calls), concurrent stress tests, 110+ suspend function tests with cancellation, 50+ Flow tests, and 300+ inheritance/interface/extension tests.
+Every test compiles Kotlin/Native → `libcalculator.so` (470+ exported symbols) → loads via JNI `external fun` → verifies on JVM. Zero mocks — all 1700+ tests cross the real native boundary. Includes load tests (500K+ JNI calls), concurrent stress tests, 110+ suspend function tests with cancellation, 50+ Flow tests, and 300+ inheritance/interface/extension tests.
 
 | Feature | As param | As return | As property | CB param | CB return | Notes |
 |---------|----------|-----------|-------------|----------|-----------|-------|
@@ -132,7 +132,7 @@ Every test compiles Kotlin/Native → `libcalculator.so` (470+ exported symbols)
 | `Long` | ✅ 2t | ✅ 2t | &mdash; | ✅ 2t | ✅ 2t | direct pass-through |
 | `Double` | ✅ 2t | ✅ 2t | ✅ 1t | ✅ 2t | ✅ 2t | direct pass-through |
 | `Float` | ✅ 1t | ✅ 1t | &mdash; | ✅ 1t | ✅ 1t | direct pass-through |
-| `Boolean` | ✅ 3t | ✅ 2t | ✅ 1t | ✅ 3t | ✅ 1t | 0/1 convention over FFM |
+| `Boolean` | ✅ 3t | ✅ 2t | ✅ 1t | ✅ 3t | ✅ 1t | 0/1 convention over JNI |
 | `Byte` | ✅ 1t | ✅ 1t | &mdash; | ✅ 1t | ✅ 1t | direct pass-through |
 | `Short` | ✅ 1t | ✅ 1t | &mdash; | ✅ 1t | ✅ 1t | direct pass-through |
 | `String` | ✅ 4t | ✅ 4t | ✅ 3t | ✅ 4t | ✅ 3t | output-buffer pattern |
@@ -193,7 +193,7 @@ suspend fun fetchData(query: String): String {
 val result = calc.fetchData("test")  // suspends the coroutine
 ```
 
-**How it works**: the native bridge launches a `CoroutineScope` with a `Job` and reports completion through two static FFM upcall stubs, dispatched by a per-call id. The JVM proxy uses `suspendCancellableCoroutine` to suspend until the native coroutine completes.
+**How it works**: the native bridge launches a `CoroutineScope` with a `Job` and reports completion through JNI callback dispatchers, dispatched by a per-call id. The JVM proxy uses `suspendCancellableCoroutine` to suspend until the native coroutine completes.
 
 **Cancellation**: JVM coroutine cancel → `Job.cancel()` on native side. Native `CancellationException` → JVM `CancellationException`. Bidirectional, automatic.
 
@@ -215,7 +215,7 @@ calc.countUp(100).toList()               // [1, 2, ..., 100]
 calc.infiniteFlow().take(3).toList()     // [0, 1, 2] — auto-cancelled
 ```
 
-**How it works**: 3 static FFM upcall stubs (`onNext`, `onError`, `onComplete`) are dispatched by a per-call id. The native side collects the Flow in a `CoroutineScope` and only emits against credits granted as the JVM collector consumes elements, so a slow collector applies backpressure instead of losing elements.
+**How it works**: 3 JNI callback dispatchers (`onNext`, `onError`, `onComplete`) are dispatched by a per-call id. The native side collects the Flow in a `CoroutineScope` and only emits against credits granted as the JVM collector consumes elements, so a slow collector applies backpressure instead of losing elements.
 
 **Cancellation**: collecting only N elements (via `take`, `first`) automatically cancels the native Flow collection. Manual `Job.cancel()` also propagates.
 
@@ -239,7 +239,7 @@ desktop.memoryFlow(2000L).collect { info ->
 
 ### Callbacks & lambdas
 
-JVM lambdas cross the FFM boundary via upcall stubs. The plugin generates all the FFM infrastructure automatically.
+JVM lambdas cross the JNI boundary via callback dispatchers. The plugin generates all the dispatcher infrastructure automatically.
 
 **Lifecycle**: upcall stubs are allocated in a per-call arena and released when the call returns, so a callback is valid **for the duration of the call only** (as with JNI). Native code must not store a callback and invoke it later; expose event streams as `Flow<T>` instead.
 
@@ -268,7 +268,7 @@ desktop.trayClicks().collect { index -> println("Clicked: $index") }
 
 ### Collections
 
-`List<T>`, `Set<T>`, and `Map<K, V>` cross the FFM boundary using flat arrays (pointer + size), inspired by swift-java's `[UInt8]` lowering.
+`List<T>`, `Set<T>`, and `Map<K, V>` cross the JNI boundary using flat arrays (pointer + size), inspired by swift-java's `[UInt8]` lowering.
 
 There is no size limit: results that do not fit the initial transfer buffers (4096 elements / 8 KB of packed strings) are parked natively and read back with a larger buffer, without calling the function twice. The same applies to large `String`, `ByteArray` and data class `String` fields.
 
@@ -345,13 +345,13 @@ calc.add(5) // works normally after exception
 | `Float?` | `JAVA_LONG` (raw bits) | `Long.MIN_VALUE` = null |
 | `Double?` | `JAVA_LONG` (raw bits) | `Long.MIN_VALUE` = null |
 
-## Benchmarks — Native (FFM) vs Pure JVM
+## Benchmarks — Native (JNI) vs Pure JVM
 
 Measured on Intel Core i5-14600 (20 cores), 45 GB RAM, Ubuntu 25.10, JDK 25 (GraalVM), Kotlin 2.4.20.
 
-**Methodology**: each benchmark runs the operation in a tight loop. 3 warmup iterations are discarded, then 5 measured iterations are averaged. "Native" creates a proxy object via FFM and calls into the Kotlin/Native shared library (.so). "JVM" runs the equivalent Kotlin/JVM code directly. Ratio = native/jvm (>1 = native slower due to FFM overhead). Memory is measured via `Runtime.totalMemory() - freeMemory()` before/after with explicit GC.
+**Methodology**: each benchmark runs the operation in a tight loop. 3 warmup iterations are discarded, then 5 measured iterations are averaged. "Native" creates a proxy object via JNI and calls into the Kotlin/Native shared library (.so). "JVM" runs the equivalent Kotlin/JVM code directly. Ratio = native/jvm (>1 = native slower due to JNI overhead). Memory is measured via `Runtime.totalMemory() - freeMemory()` before/after with explicit GC.
 
-### Compute-bound (work stays in native, single FFM call)
+### Compute-bound (work stays in native, single JNI call)
 
 | Benchmark | Native | JVM | Ratio | Analysis |
 |-----------|--------|-----|-------|----------|
@@ -361,11 +361,11 @@ Measured on Intel Core i5-14600 (20 cores), 45 GB RAM, Ubuntu 25.10, JDK 25 (Gra
 | String concat loop (10K) | 21.65 ms | 17.62 ms | 1.23x | Near-equal |
 | Bubble sort (5K elements) | 13.13 ms | 4.78 ms | 2.75x | JVM JIT optimizes array access better |
 
-### FFM call overhead (many small downcalls)
+### JNI call overhead (many small downcalls)
 
 | Benchmark | Native | JVM | Ratio | Analysis |
 |-----------|--------|-----|-------|----------|
-| 100K trivial calls | 4.94 ms | 0.31 ms | 16x | ~49 ns/call FFM overhead |
+| 100K trivial calls | 4.94 ms | 0.31 ms | 16x | ~49 ns/call JNI overhead |
 | 10K create+close cycles | 4.12 ms | 0.11 ms | 36x | StableRef alloc+dispose cost |
 | 10K data class returns | 4.32 ms | 0.15 ms | 29x | Out-param marshaling cost |
 | 10K string returns | 6.45 ms | 0.59 ms | 11x | Output-buffer + UTF-8 copy |
@@ -390,8 +390,8 @@ Measured on Intel Core i5-14600 (20 cores), 45 GB RAM, Ubuntu 25.10, JDK 25 (Gra
 | String concat (10K) | **0 KB** | 131,680 KB | Native: strings stay on native heap |
 
 **Key takeaways**:
-- **Compute-bound workloads** (fibonacci, pi, sorting) run at near-native speed &mdash; the FFM boundary is crossed once, then all work happens in Kotlin/Native
-- **FFM call overhead** is ~49 ns/call &mdash; negligible for methods that do real work, visible only in micro-benchmarks with 100K+ trivial calls
+- **Compute-bound workloads** (fibonacci, pi, sorting) run at near-native speed &mdash; the JNI boundary is crossed once, then all work happens in Kotlin/Native
+- **JNI call overhead** is ~49 ns/call &mdash; negligible for methods that do real work, visible only in micro-benchmarks with 100K+ trivial calls
 - **Memory advantage**: native allocations don't touch the JVM heap, reducing GC pressure significantly (0 KB vs 131 MB for string-heavy workloads)
 - **Thread-safe**: all concurrent benchmarks pass with zero crashes (AtomicReference error state, idempotent dispose)
 
@@ -401,7 +401,7 @@ Measured on Intel Core i5-14600 (20 cores), 45 GB RAM, Ubuntu 25.10, JDK 25 (Gra
 
 | Feature | Notes |
 |---------|-------|
-| Generics (`class Box<T>`) | Complex type erasure at FFM boundary — use concrete types |
+| Generics (`class Box<T>`) | Complex type erasure at JNI boundary — use concrete types |
 | Interface / sealed class as return type | Methods must return the concrete type, not the interface/sealed parent |
 | Operator overloading (`operator fun plus`) | Use named methods (`fun add()`) |
 | Infix functions | Use regular method syntax |
@@ -415,7 +415,7 @@ Measured on Intel Core i5-14600 (20 cores), 45 GB RAM, Ubuntu 25.10, JDK 25 (Gra
 | Expect/actual declarations | KMP's responsibility | Use platform-specific source sets |
 | Storing a JVM callback on the native side | Upcall stubs are released when the call returns | Expose events as `Flow<T>` |
 | NUL characters in `String` arguments | Native strings are NUL-terminated; rejected with `IllegalArgumentException` | Encode the data (e.g. `ByteArray`) |
-| `ByteArray` in collections | Buffer lifecycle complexity across FFM | Use `List<Int>` or Base64 String |
+| `ByteArray` in collections | Buffer lifecycle complexity across JNI | Use `List<Int>` or Base64 String |
 | `ByteArray` as data class field | Out-param buffer not wired for DC fields | Use separate method or String |
 | `ByteArray` as callback param | Buffer lifecycle across callback boundary | Use String (Base64) |
 | Lambda as callback return type | Callbacks supported as parameters only | Return object with methods |
@@ -442,46 +442,19 @@ kotlinNativeExport {
 
     // Build type: "release" (default, ~700KB .so) or "debug" (~6MB .so)
     buildType = "release"
-
-    // Bridge backend: "ffm" (default, JDK 22+) or "jni" (JDK 8+, Android JVM compatible)
-    // Can be overridden per-build with: ./gradlew -Pkne.bridgeMode=jni
-    bridgeMode = "ffm"
 }
 ```
 
-### Bridge backend (FFM vs JNI)
+### JNI mechanism
 
-The plugin supports two bridge backends, switchable via `bridgeMode`:
+The plugin generates JNI bridges exclusively:
 
-| | FFM (default) | JNI |
-|---|---|---|
-| **JDK requirement** | JDK 22+ ([JEP 454](https://openjdk.org/jeps/454)) | JDK 8+ / Android JVM |
-| **Mechanism** | `MethodHandle` downcalls | `external fun` + `RegisterNatives` |
-| **Android** | ❌ no FFM API | ✅ works out of the box |
-| **GraalVM native-image** | `foreign` metadata section | `jni` metadata section |
-| **minSdk (Android)** | N/A | 26+ (`java.lang.ref.Cleaner`) |
-
-To use JNI mode:
-
-```kotlin
-kotlinNativeExport {
-    bridgeMode = "jni"
-}
-```
-
-Or override per-build without touching the build script:
-
-```bash
-./gradlew -Pkne.bridgeMode=jni jvmTest
-```
-
-In JNI mode the plugin additionally:
 - Registers a `jni.h` cinterop on the native compilation (from the local JDK's include directory)
-- Generates `external fun` JVM proxies instead of FFM `MethodHandle` proxies
+- Generates `external fun` JVM proxies dispatched via `RegisterNatives`
 - Generates a `RegisterNatives` bootstrap in the native shared library
-- Produces `jni-config.json` GraalVM metadata instead of foreign downcall descriptors
+- Produces GraalVM JNI metadata
 
-The public API surface (class shapes, method signatures, exception types, lifecycle) is identical in both modes &mdash; the same test suite runs against either backend.
+The generated code uses no `java.lang.foreign` APIs, so it runs on JDK 8+ and Android JVMs.
 
 For Android, the plugin already emits the native `.so` in the standard `jniLibs/<abi>/` layout at `build/generated/kne/nativeLib/jniLibs/` &mdash; wire that directory into your Android module and `System.loadLibrary()` picks it up from the APK:
 
@@ -494,14 +467,10 @@ android {
 
 ### JVM runtime requirements
 
-The generated FFM proxies require:
+The generated code requires:
 
-- **FFM mode**: JDK 22+ (FFM API finalized in JDK 22 via [JEP 454](https://openjdk.org/jeps/454), recommended JDK 25)
-- **JNI mode**: JDK 8+ (no `java.lang.foreign` APIs used), Android API 26+
-- **`--enable-native-access=ALL-UNNAMED`** JVM arg (FFM mode only; auto-configured for tests by the plugin)
-- **kotlinx-coroutines** (your project declares it): the generated code only references coroutines when your API declares suspend/Flow members &mdash; the plugin never injects dependencies, so add `org.jetbrains.kotlinx:kotlinx-coroutines-core` to the source sets that consume the generated code (nativeMain / jvmMain / androidMain)
-
-The native library is automatically bundled in the JAR and extracted at runtime &mdash; no manual `java.library.path` configuration needed.
+- **JVM**: JDK 8+ (no `java.lang.foreign` APIs used), recommended JDK 25
+- **Android**: API 26+ (`java.lang.ref.Cleaner`)
 
 ### Zero-config native library loading
 
@@ -510,7 +479,7 @@ The generated `KneRuntime` uses a three-tier loading strategy:
 1. **`java.library.path`** &mdash; for development, packaged apps, or manual override
 2. **`System.loadLibrary`** (JNI mode) &mdash; Android `jniLibs/<abi>/` from the APK, or system-installed libraries
 3. **JAR extraction** &mdash; extracts from `jniLibs/{platform}/` in the classpath to a persistent cache (`~/.cache/kne/`)
-4. **Loader lookup** (FFM mode) &mdash; fallback for GraalVM native-image (native lib beside the executable)
+4. **Loader lookup** &mdash; fallback for GraalVM native-image (native lib beside the executable)
 
 ### Build performance & Gradle Cache
 
@@ -526,13 +495,13 @@ The plugin auto-generates GraalVM reachability metadata under `META-INF/native-i
 
 - `reflect-config.json` &mdash; all generated proxy classes
 - `resource-config.json` &mdash; bundled native library resources
-- `reachability-metadata.json` &mdash; FFM foreign downcall + upcall descriptors, reflection, and resources
+- `reachability-metadata.json` &mdash; JNI config, reflection, and resources
 
 For GraalVM native-image builds, the native `.so`/`.dylib` must be placed next to the executable (the plugin bundles it in the JAR for JVM, but native-image can't extract at runtime).
 
 ### Using with Compose Desktop / Nucleus
 
-The Compose compiler plugin and Nucleus Native Access both add Kotlin/Native targets, but Compose doesn't support arbitrary native compilations (e.g. `linuxX64`, `mingwX64` for FFM bridges). **The recommended approach is to put your native code in a separate Gradle module** without the Compose compiler plugin:
+The Compose compiler plugin and Nucleus Native Access both add Kotlin/Native targets, but Compose doesn't support arbitrary native compilations (e.g. `linuxX64`, `mingwX64` for JNI bridges). **The recommended approach is to put your native code in a separate Gradle module** without the Compose compiler plugin:
 
 ```
 my-app/
@@ -593,7 +562,7 @@ nucleus.application {
 }
 ```
 
-This avoids any conflict between the Compose compiler and Kotlin/Native targets used for FFM bridges.
+This avoids any conflict between the Compose compiler and Kotlin/Native targets used for JNI bridges.
 
 ### Using with C interop (e.g. libnotify)
 
@@ -631,7 +600,7 @@ class LinuxDesktop {
 ```kotlin
 // src/jvmMain/kotlin/Main.kt — transparent usage
 val desktop = LinuxDesktop()
-desktop.sendNotification("Hello", "From Kotlin/Native via FFM!", "dialog-information")
+desktop.sendNotification("Hello", "From Kotlin/Native via JNI!", "dialog-information")
 println(desktop.getHostname())
 desktop.close()
 ```
@@ -651,7 +620,7 @@ Run them:
 ```bash
 ./gradlew :examples:calculator:run
 ./gradlew :examples:systeminfo:run
-./gradlew :examples:calculator:jvmTest    # 1700+ end-to-end FFM tests
+./gradlew :examples:calculator:jvmTest    # 1700+ end-to-end JNI tests
 ./gradlew :examples:benchmark:jvmTest     # Performance benchmarks (native vs JVM)
 ```
 
@@ -661,7 +630,7 @@ The plugin is inspired by two projects:
 
 - **[swift-export-standalone](https://github.com/JetBrains/kotlin/tree/master/native/swift/swift-export-standalone)** (JetBrains) &mdash; how Kotlin exports its API to Swift via C bridges. We adapted the approach: scan Kotlin sources, generate `@CName` bridge functions with `StableRef` for object lifecycle.
 
-- **[swift-java](https://github.com/swiftlang/swift-java)** (Apple) &mdash; how Swift code is made callable from Java via FFM `MethodHandle` downcalls. We adapted the FFM binding generation: each method gets a `FunctionDescriptor` + `MethodHandle`, classes use `Cleaner` for GC safety.
+- **[swift-java](https://github.com/swiftlang/swift-java)** (Apple) &mdash; how Swift code is made callable from Java through generated bindings. We adapted the binding generation approach: each class gets a JVM proxy, classes use `Cleaner` for GC safety.
 
 ```
 plugin-build/plugin/src/main/kotlin/dev/nucleusframework/nna/plugin/
@@ -673,9 +642,11 @@ plugin-build/plugin/src/main/kotlin/dev/nucleusframework/nna/plugin/
 │   ├── ParseCache.kt            # Persistent source file → IR / IR → outputs cache
 │   └── PsiParseWorkAction.kt    # Gradle Worker for isolated PSI classloader
 ├── codegen/
-│   ├── NativeBridgeGenerator.kt # @CName + StableRef bridges (inspired by @_cdecl thunks)
-│   ├── FfmProxyGenerator.kt     # JVM proxy classes with FFM (inspired by FFMSwift2JavaGenerator)
-│   └── GeneratedOutputs.kt      # Write-if-changed output sync + stale file removal
+│   ├── JniNativeBridgeGenerator.kt # KotlinPoet @CName + StableRef bridges (inspired by @_cdecl thunks)
+│   ├── JniProxyGenerator.kt        # KotlinPoet JVM proxy classes with `external fun` downcalls
+│   ├── JniTypes.kt                 # JNI descriptor + wire-type mapping
+│   ├── poet/                       # Shared KotlinPoet type mapping (KneType → TypeName, cinterop refs)
+│   └── GeneratedOutputs.kt         # Write-if-changed output sync + stale file removal
 ├── tasks/
 │   └── GenerateNativeBridgesTask.kt  # Single task: PSI parse + native bridges + JVM proxies + GraalVM metadata
 ├── KotlinNativeExportExtension.kt
@@ -696,7 +667,7 @@ Data classes are supported as value types (field marshalling), and `commonMain` 
 
 - **Kotlin** 2.4.20+
 - **Gradle** 9.1+ (for JDK 25 support)
-- **JDK** 22+ (FFM stable since JDK 22 / JEP 454), recommended 25
+- **JDK** 8+ (no `java.lang.foreign` usage in generated code), recommended 25
 - **Kotlin/Native** toolchain (bundled with KMP plugin)
 
 ## License

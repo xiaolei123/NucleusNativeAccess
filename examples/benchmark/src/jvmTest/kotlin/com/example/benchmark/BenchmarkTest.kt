@@ -4,13 +4,13 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * Benchmarks comparing FFM native calls vs pure JVM implementations.
+ * Benchmarks comparing JNI native calls vs pure JVM implementations.
  *
  * Methodology:
  * - Each benchmark runs the operation N times and measures wall-clock time
  * - 3 warmup iterations discarded, then 5 measured iterations averaged
- * - Both native (via FFM) and pure JVM (equivalent Kotlin/JVM code) are measured
- * - Ratio = native_time / jvm_time (>1 means native is slower due to FFM overhead)
+ * - Both native (via JNI) and pure JVM (equivalent Kotlin/JVM code) are measured
+ * - Ratio = native_time / jvm_time (>1 means native is slower due to JNI overhead)
  * - Memory: Runtime.freeMemory() before/after to estimate allocation pressure
  */
 class BenchmarkTest {
@@ -132,7 +132,7 @@ class BenchmarkTest {
         assertTrue(true)
     }
 
-    @Test fun `benchmark - FFM call overhead (100K simple calls)`() {
+    @Test fun `benchmark - JNI call overhead (100K simple calls)`() {
         val nativeMs = bench {
             FibCalculator().use { calc ->
                 repeat(100_000) { calc.fibIterative(1) }
@@ -316,11 +316,11 @@ class BenchmarkTest {
     }
 
     @Test fun `benchmark - summary`() {
-        println("\n  NOTE: Ratios >1 mean native is slower (FFM call overhead).")
+        println("\n  NOTE: Ratios >1 mean native is slower (JNI call overhead).")
         println("  Heavy compute (fib, pi, sort) runs entirely in native — ratio ~1.")
-        println("  Frequent small calls have FFM overhead — ratio >1.")
+        println("  Frequent small calls have JNI overhead — ratio >1.")
         println("  String/DC marshaling has buffer copy overhead.")
-        println("  Concurrent benchmarks show thread-safety of FFM downcalls.")
+        println("  Concurrent benchmarks show thread-safety of JNI downcalls.")
         println("=== END BENCHMARKS ===\n")
         assertTrue(true)
     }

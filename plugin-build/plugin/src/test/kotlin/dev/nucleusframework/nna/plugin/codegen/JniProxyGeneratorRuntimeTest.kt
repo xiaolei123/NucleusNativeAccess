@@ -4,7 +4,12 @@ import dev.nucleusframework.nna.plugin.ir.KneModule
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class FfmProxyGeneratorRuntimeTest {
+/**
+ * JNI-mode runtime generation through the KotlinPoet pipeline. The heavier end-to-end worker
+ * coverage lives in the examples' JNI test suites; this keeps the KotlinPoet path covered
+ * for the runtime file the JVM side depends on.
+ */
+class JniProxyGeneratorRuntimeTest {
 
     @Test
     fun `cache staleness check compares content, not only size`() {
@@ -17,6 +22,13 @@ class FfmProxyGeneratorRuntimeTest {
         )
     }
 
+    @Test
+    fun `runtime registers natives and rejects FFM imports`() {
+        val runtime = generateRuntime()
+        assertTrue("missing initNatives", runtime.contains("initNatives"))
+        assertTrue("no java.lang.foreign import allowed", !runtime.contains("import java.lang.foreign"))
+    }
+
     private fun generateRuntime(): String {
         val module = KneModule(
             libName = "demo",
@@ -26,6 +38,6 @@ class FfmProxyGeneratorRuntimeTest {
             enums = emptyList(),
             functions = emptyList(),
         )
-        return FfmProxyGenerator().generate(module, "demo").getValue("KneRuntime.kt")
+        return JniProxyGenerator().generate(module, "demo").getValue("KneRuntime.kt")
     }
 }

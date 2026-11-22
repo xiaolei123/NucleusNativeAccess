@@ -632,7 +632,7 @@ class CallbackTest {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // Phase 4: Callbacks / Lambdas (FFM upcall stubs)
+    // Phase 4: Callbacks / Lambdas (JNI callback dispatchers)
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Test

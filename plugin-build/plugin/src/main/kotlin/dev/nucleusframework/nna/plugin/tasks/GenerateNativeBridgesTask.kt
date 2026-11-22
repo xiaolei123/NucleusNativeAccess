@@ -49,13 +49,9 @@ abstract class GenerateNativeBridgesTask : DefaultTask() {
     @get:Input
     abstract val taskJvmPackage: Property<String>
 
-    /** Bridge backend: "ffm" (default) or "jni". Selects which generators run in the worker. */
-    @get:Input
-    abstract val taskBridgeMode: Property<String>
-
     /**
      * JDK include directory path (containing jni.h), used to write the cinterop def
-     * file in JNI mode. Optional: only set when [taskBridgeMode] is "jni".
+     * file for the native bridge cinterop.
      */
     @get:Optional
     @get:Input
@@ -112,7 +108,6 @@ abstract class GenerateNativeBridgesTask : DefaultTask() {
             commonSourceFiles.from(commonKtFiles)
             libName.set(taskLibName)
             jvmPackage.set(taskJvmPackage)
-            bridgeMode.set(taskBridgeMode)
             nativeBridgesDir.set(taskOutputDir)
             androidNativeBridgesDir.set(taskAndroidNativeOutputDir)
             jvmProxiesDir.set(taskJvmOutputDir)
@@ -123,16 +118,12 @@ abstract class GenerateNativeBridgesTask : DefaultTask() {
     }
 
     /**
-     * JNI mode: emit the cinterop def file that exposes jni.h to the native bridge
-     * (package `dev.nucleusframework.knejni`). FFM mode: remove any stale def file.
+     * Emit the cinterop def file that exposes jni.h to the native bridge
+     * (package `dev.nucleusframework.knejni`).
      */
     private fun writeCinteropDefIfNeeded() {
         val cinteropDir = taskCinteropDir.orNull?.asFile ?: return
         val defFile = cinteropDir.resolve("knejni.def")
-        if (taskBridgeMode.get() != "jni") {
-            defFile.delete()
-            return
-        }
         val includeDir = File(taskJdkIncludeDir.get())
         val platformDirName = when {
             System.getProperty("os.name").startsWith("Mac") -> "darwin"
@@ -190,6 +181,6 @@ abstract class GenerateNativeBridgesTask : DefaultTask() {
 
     private companion object {
         /** Bump when the cache layout or the parsing semantics change. */
-        const val CACHE_FORMAT_VERSION = 1
+        const val CACHE_FORMAT_VERSION = 2
     }
 }

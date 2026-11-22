@@ -35,7 +35,7 @@ fun main() {
     application {
         Window(
             onCloseRequest = ::exitApplication,
-            title = "Kotlin/Native Calculator (via FFM)",
+            title = "Kotlin/Native Calculator (via JNI)",
             state = rememberWindowState(width = 360.dp, height = 660.dp),
             resizable = false,
         ) {
@@ -51,7 +51,7 @@ fun main() {
 @Composable
 @androidx.compose.ui.tooling.preview.Preview
 fun CalculatorScreen() {
-    // Every call on this object goes through FFM into Kotlin/Native
+    // Every call on this object goes through JNI into Kotlin/Native
     var calc by remember { mutableStateOf(Calculator(0)) }
     var display by remember { mutableStateOf("0") }
     var pendingOp by remember { mutableStateOf<String?>(null) }
@@ -80,7 +80,7 @@ fun CalculatorScreen() {
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
         Text(
-            "Powered by Kotlin/Native via FFM",
+            "Powered by Kotlin/Native via JNI",
             fontSize = 11.sp, color = Color(0xFF81C784),
             modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center,
         )

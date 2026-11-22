@@ -33,20 +33,4 @@ abstract class KotlinNativeExportExtension {
      * but only the selected one is linked before tests run.
      */
     abstract val buildType: Property<String>
-
-    /**
-     * Bridge backend used between the JVM and the Kotlin/Native shared library.
-     * Accepted values: "ffm", "jni" (case-insensitive).
-     * Defaults to "ffm".
-     *
-     * - "ffm": Java FFM (Foreign Function & Memory API, JEP 454). Requires JDK 22+.
-     * - "jni": classic Java Native Interface via `external fun` + RegisterNatives.
-     *   Works on JDK 8+ and Android JVMs (no `java.lang.foreign` APIs are used).
-     *   In this mode the plugin also registers a `jni.h` cinterop against the
-     *   local JDK include directory, so the native bridge can talk to `JNIEnv`.
-     *
-     * Can be overridden per-build with the Gradle property `kne.bridgeMode`
-     * (e.g. `-Pkne.bridgeMode=jni`).
-     */
-    abstract val bridgeMode: Property<String>
 }

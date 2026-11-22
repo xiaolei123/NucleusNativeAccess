@@ -51,7 +51,7 @@ fun main() {
     application {
         Window(
             onCloseRequest = ::exitApplication,
-            title = "Native System Info (via FFM)",
+            title = "Native System Info (via JNI)",
             state = rememberWindowState(width = 500.dp, height = 800.dp),
         ) {
             MaterialTheme(colors = darkColors()) {
@@ -99,7 +99,7 @@ fun SystemInfoScreen() {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(
-            "Native OS APIs via Kotlin/Native + FFM",
+            "Native OS APIs via Kotlin/Native + JNI",
             fontSize = 11.sp, color = Color(0xFF81C784),
             modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center,
         )
@@ -129,8 +129,8 @@ fun SystemInfoScreen() {
         Button(
             onClick = {
                 desktop.sendNotification(
-                    "Kotlin/Native + FFM",
-                    "Sent from JVM -> FFM -> Kotlin/Native -> native OS API",
+                    "Kotlin/Native + JNI",
+                    "Sent from JVM -> JNI -> Kotlin/Native -> native OS API",
                     "dialog-information",
                 )
                 notifSent = true
