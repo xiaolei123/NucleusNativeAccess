@@ -8,6 +8,9 @@ import dev.nucleusframework.nna.plugin.codegen.JniTypes
 import dev.nucleusframework.nna.plugin.ir.KneParam
 import dev.nucleusframework.nna.plugin.ir.KneType
 
+/** Indentation used by every generated Kotlin file (KotlinPoet's default is two spaces). */
+const val KNE_INDENT = "    "
+
 /**
  * KotlinPoet type mapping for the JNI backend: translates [KneType] into [TypeName]s for the
  * generated JVM-side code.

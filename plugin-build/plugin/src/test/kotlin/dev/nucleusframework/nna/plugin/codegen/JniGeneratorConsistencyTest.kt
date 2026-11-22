@@ -90,7 +90,7 @@ class JniGeneratorConsistencyTest {
 
     @Test
     fun `every registered native exists as an external fun on the resolved class`() {
-        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
+        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo").values.joinToString("\n")
         val proxies = JniProxyGenerator().generate(module(), "demo")
 
         val registrations = parseRegistrations(native)
@@ -117,7 +117,7 @@ class JniGeneratorConsistencyTest {
 
     @Test
     fun `registered classes use the flat proxy class name`() {
-        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
+        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo").values.joinToString("\n")
         val targets = parseRegistrations(native).keys
 
         assertTrue("nested class must be addressed by its flattened proxy name", targets.any { it.endsWith("/Calc_Adder") })
@@ -127,7 +127,7 @@ class JniGeneratorConsistencyTest {
 
     @Test
     fun `classes without jvm natives are only cached, never registered`() {
-        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
+        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo").values.joinToString("\n")
         val targets = parseRegistrations(native).keys
 
         // Enums and sealed bases have no `external fun` on the JVM side, so binding anything to
@@ -141,14 +141,14 @@ class JniGeneratorConsistencyTest {
 
     @Test
     fun `bootstrap rethrows instead of silently swallowing failures`() {
-        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
+        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo").values.joinToString("\n")
         assertTrue("bootstrap must rethrow registration failures", native.contains("throw e"))
         assertTrue("bootstrap must print what failed", native.contains("BOOTSTRAP FAILED"))
     }
 
     @Test
     fun `nullable data class param ships its isNull flag with 1 meaning null`() {
-        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
+        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo").values.joinToString("\n")
         val proxies = JniProxyGenerator().generate(module(), "demo")
 
         // Native reads the flag as `_isNull`, so the JVM side must send 1 for null.
@@ -177,7 +177,7 @@ class JniGeneratorConsistencyTest {
                 )
             },
         )
-        val native = JniNativeBridgeGenerator.desktop().generate(withLambda, "demo")
+        val native = JniNativeBridgeGenerator.desktop().generate(withLambda, "demo").values.joinToString("\n")
         val proxies = JniProxyGenerator().generate(withLambda, "demo")
 
         val id = JniTypes.functionId(KneType.FUNCTION(listOf(KneType.INT), KneType.UNIT))
@@ -192,7 +192,7 @@ class JniGeneratorConsistencyTest {
 
     @Test
     fun `extension functions register on the flat KneExt with matching parameter order`() {
-        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
+        val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo").values.joinToString("\n")
         val proxies = JniProxyGenerator().generate(module(), "demo")
 
         assertTrue("extension host must be the flat KneExt class", native.contains("\"demo/KneExt\""))
@@ -208,8 +208,8 @@ class JniGeneratorConsistencyTest {
 
     @Test
     fun `android variant registers the same natives against the platform android surface`() {
-        val desktop = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
-        val android = JniNativeBridgeGenerator.android().generate(module(), "demo")
+        val desktop = JniNativeBridgeGenerator.desktop().generate(module(), "demo").values.joinToString("\n")
+        val android = JniNativeBridgeGenerator.android().generate(module(), "demo").values.joinToString("\n")
 
         // Import surface follows the binding flavor (per-type imports, no star imports).
         assertTrue("desktop must bind the knejni cinterop surface", desktop.contains("import dev.nucleusframework.knejni."))
@@ -225,6 +225,32 @@ class JniGeneratorConsistencyTest {
         // Registration parity: both variants bind exactly the same natives on the same classes,
         // so one JVM proxy set serves both native families.
         assertEquals(parseRegistrations(desktop), parseRegistrations(android))
+    }
+
+    @Test
+    fun `bridge sources are split per class with the runtime in kne_bridges`() {
+        val files = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
+
+        // Common runtime file: helpers, top-level function entries and the bootstrap.
+        val common = files.getValue(JniNativeBridgeGenerator.COMMON_FILE_BASE + ".kt")
+        assertTrue("bootstrap must live in the common file", common.contains("fun kne_initNatives"))
+        assertTrue("runtime helpers must live in the common file", common.contains("fun _kneFns("))
+        assertTrue("top-level function entries live in the common file", common.contains("kne_topLevel("))
+
+        // Per-class files hold only that class's entry points; the extension fn goes with the receiver.
+        val calcFile = files.getValue("kne_Calc_bridges.kt")
+        assertTrue("class ctor entries live in the class file", calcFile.contains("kne_Calc_new("))
+        assertTrue("extension entries live in the receiver's file", calcFile.contains("kne_Calc_ext_extended("))
+        assertTrue("class files must not host the bootstrap", !calcFile.contains("kne_initNatives"))
+        assertTrue("class files must not host runtime helpers", !calcFile.contains("fun _kneFns("))
+
+        // Nested classes get their own file under the flattened simple name.
+        val nestedFile = files.getValue("kne_Calc_Adder_bridges.kt")
+        assertTrue("nested class entries live in their own file", nestedFile.contains("kne_Calc_Adder_plus("))
+
+        // All `run { ... }` registration blocks live in the bootstrap: parsing the common file
+        // alone must yield exactly the same table as parsing every file joined.
+        assertEquals(parseRegistrations(common), parseRegistrations(files.values.joinToString("\n")))
     }
 
     // ── parsing helpers ──────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ import com.squareup.kotlinpoet.TypeName
 import com.squareup.kotlinpoet.TypeSpec
 import com.squareup.kotlinpoet.TypeVariableName
 import com.squareup.kotlinpoet.joinToCode
+import dev.nucleusframework.nna.plugin.codegen.poet.KNE_INDENT
 import dev.nucleusframework.nna.plugin.codegen.poet.KnePoetTypes
 import dev.nucleusframework.nna.plugin.ir.KneClass
 import dev.nucleusframework.nna.plugin.ir.KneDataClass
@@ -214,12 +215,16 @@ class JniProxyGenerator {
         }
 
         val bindings = buildNativeBindings(functionReturnTypes, hasSuspend, hasFlow, poet)
-        return FileSpec.builder(pkg, "KneRuntime")
+        return fileSpec(pkg, "KneRuntime")
             .addType(runtime.build())
             .addType(bindings)
             .build()
             .toString()
     }
+
+    /** Every generated file uses [KNE_INDENT] (KotlinPoet's default is two spaces). */
+    private fun fileSpec(pkg: String, name: String): FileSpec.Builder =
+        FileSpec.builder(pkg, name).indent(KNE_INDENT)
 
     private fun buildNativeBindings(
         functionReturnTypes: List<KneType.FUNCTION>,
@@ -834,7 +839,7 @@ class JniProxyGenerator {
     // ══════════════════════════════════════════════════════════════════════════
 
     private fun buildExceptionFileSpec(pkg: String): FileSpec =
-        FileSpec.builder(pkg, "KotlinNativeException")
+        fileSpec(pkg, "KotlinNativeException")
             .addType(
                 TypeSpec.classBuilder("KotlinNativeException")
                     .addKdoc(
@@ -862,7 +867,7 @@ class JniProxyGenerator {
             // Initializer equal to the ctor parameter name -> KotlinPoet emits a ctor property.
             type.addProperty(PropertySpec.builder(f.name, poet.publicType(f.type)).initializer(f.name).build())
         }
-        return FileSpec.builder(pkg, dc.simpleName).addType(type.build()).build().toString()
+        return fileSpec(pkg, dc.simpleName).addType(type.build()).build().toString()
     }
 
     private fun buildEnumFileSpec(enum: KneEnum, module: KneModule, pkg: String, poet: KnePoetTypes): String {
@@ -880,7 +885,7 @@ class JniProxyGenerator {
             }
         }
         enum.entries.forEach { entry -> type.addEnumConstant(entry.name) }
-        return FileSpec.builder(pkg, enum.simpleName).addType(type.build()).build().toString()
+        return fileSpec(pkg, enum.simpleName).addType(type.build()).build().toString()
     }
 
     private fun buildInterfaceFileSpec(iface: KneInterface, poet: KnePoetTypes): FileSpec {
@@ -905,7 +910,7 @@ class JniProxyGenerator {
                     .build(),
             )
         }
-        return FileSpec.builder(ifacePkg, iface.simpleName).addType(type.build()).build()
+        return fileSpec(ifacePkg, iface.simpleName).addType(type.build()).build()
     }
 
     /** Source-decl emission: verbatim copy with native-only import filtering (same as pre-KotlinPoet). */
@@ -973,7 +978,7 @@ class JniProxyGenerator {
                     .build(),
             )
         }
-        return FileSpec.builder(pkg, objectName).addType(obj.build()).build()
+        return fileSpec(pkg, objectName).addType(obj.build()).build()
     }
 
     private fun buildExtensionsFileSpec(
@@ -1004,7 +1009,7 @@ class JniProxyGenerator {
             )
         }
 
-        val file = FileSpec.builder(pkg, "Extensions").addType(ext.build())
+        val file = fileSpec(pkg, "Extensions").addType(ext.build())
         functions.forEach { fn ->
             val receiverType = fn.receiverType ?: return@forEach
             if (fn.isSuspend || fn.returnType is KneType.FLOW) return@forEach
@@ -1133,7 +1138,7 @@ class JniProxyGenerator {
             )
         }
 
-        return FileSpec.builder(pkg, n).addType(type.build()).build()
+        return fileSpec(pkg, n).addType(type.build()).build()
     }
 
     private fun buildCompanion(cls: KneClass, isInstantiable: Boolean, poet: KnePoetTypes): TypeSpec {

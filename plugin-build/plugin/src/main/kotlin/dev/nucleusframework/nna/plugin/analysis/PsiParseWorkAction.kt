@@ -115,12 +115,17 @@ abstract class PsiParseWorkAction : WorkAction<PsiParseWorkAction.Params> {
         // JNI backend (the only backend): RegisterNatives-based bridges + external fun proxies.
         // The JVM package must be forwarded: proxies are generated flat inside it, so every
         // native-side FindClass / method descriptor is derived from that package.
-        outputs.getValue(NATIVE_BRIDGES)["kne_bridges.kt"] = JniNativeBridgeGenerator.desktop().generate(module, jvmPackage)
+        // The bridge sources are split: a shared runtime file plus one file per business class.
+        JniNativeBridgeGenerator.desktop().generate(module, jvmPackage).forEach { (filename, content) ->
+            outputs.getValue(NATIVE_BRIDGES)[filename] = content
+        }
 
         // androidNative targets have no knejni cinterop — they use the JNI bindings shipped
         // with Kotlin/Native's `platform.android`. The generator emits each variant for its
         // own binding surface (import package + function-table struct name); no post-processing.
-        outputs.getValue(ANDROID_BRIDGES)["kne_bridges.kt"] = JniNativeBridgeGenerator.android().generate(module, jvmPackage)
+        JniNativeBridgeGenerator.android().generate(module, jvmPackage).forEach { (filename, content) ->
+            outputs.getValue(ANDROID_BRIDGES)[filename] = content
+        }
 
         if (jvmPackage.isNotEmpty()) {
             val pkgPath = jvmPackage.replace('.', '/')
