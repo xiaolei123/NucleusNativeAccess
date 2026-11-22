@@ -102,7 +102,6 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         private val M_CSTR = MemberName("kotlinx.cinterop", "cstr")
         private val M_POINTED = MemberName("kotlinx.cinterop", "pointed")
         private val M_REINTERPRET = MemberName("kotlinx.cinterop", "reinterpret")
-        private val M_STATIC_C_FUNCTION = MemberName("kotlinx.cinterop", "staticCFunction")
 
         private val C_ARRAY_POINTER = ClassName("kotlinx.cinterop", "CArrayPointer")
         private val M_ALLOC = MemberName("kotlinx.cinterop", "alloc")
@@ -125,7 +124,8 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         private val STABLE_REF = KneCinteropTypes.STABLE_REF
     }
 
-    // Registration tables filled while emitting, rendered by the bootstrap at the end.
+    // Registration table filled while emitting: drives the (className, jvmName) collision check
+    // for static @CName binding, and lists the classes whose refs the bootstrap caches.
     private data class RegMethod(val jvmName: String, val sig: String, val fnName: String)
     private data class RegClass(val className: String, val methods: MutableList<RegMethod>)
     private val registrations = LinkedHashMap<String, RegClass>()
@@ -133,10 +133,43 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     /** Classes the native side only needs a global ref for (no natives to bind). */
     private val cachedClasses = LinkedHashSet<String>()
 
-    private fun registerMethod(className: String, jvmName: String, sig: String, fnName: String) {
-        registrations.getOrPut(className) { RegClass(className, mutableListOf()) }
-            .methods.add(RegMethod(jvmName, sig, fnName))
+    /**
+     * Records a native on [className] and returns the statically-derived JNI symbol to embed as
+     * `@CName` on the entry function. The JVM resolves `external fun` names by this symbol, so
+     * bootstrap-time `RegisterNatives` is no longer needed.
+     *
+     * Throws on a (className, jvmName) collision: static binding expresses overloads only via
+     * `__<descriptor>` suffixes, which we deliberately do not emit — a colliding API must rename
+     * one member instead.
+     */
+    private fun registerMethod(className: String, jvmName: String, sig: String, fnName: String): String {
+        val reg = registrations.getOrPut(className) { RegClass(className, mutableListOf()) }
+        if (reg.methods.any { it.jvmName == jvmName }) {
+            error(
+                "Static JNI binding requires unique native method names per class: " +
+                    "'$jvmName' collides on $className — rename one of the members",
+            )
+        }
+        reg.methods.add(RegMethod(jvmName, sig, fnName))
+        return jniSymbol(className, jvmName)
     }
+
+    /**
+     * Derives the static JNI symbol for a native on [className] (`a/b/C` binary path) named
+     * [jvmName], per the JNI spec's "Identify a Native Method" rule: every `_` inside a name
+     * escapes to `_1`, package separators and the class↔method boundary stay bare `_`. E.g.
+     * `com/example/MathSuite_Adder` + `_knePlus` → `Java_com_example_MathSuite_1Adder__1knePlus`.
+     */
+    private fun jniSymbol(className: String, jvmName: String): String {
+        val slash = className.lastIndexOf('/')
+        val pkg = if (slash == -1) "" else className.substring(0, slash).replace('/', '_')
+        val simple = if (slash == -1) className else className.substring(slash + 1)
+        val mangledClass = if (pkg.isEmpty()) simple.replace("_", "_1") else "$pkg" + "_" + simple.replace("_", "_1")
+        return "Java_${mangledClass}_${jvmName.replace("_", "_1")}"
+    }
+
+    private fun cnameAnnotation(symbol: String): AnnotationSpec =
+        AnnotationSpec.builder(C_NAME).addMember("%S", symbol).build()
 
     /** Caches a class ref at bootstrap time without registering any native method on it. */
     private fun cacheClass(className: String) {
@@ -300,10 +333,11 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
      * Extension functions are emitted into the receiver class's file (common file when the
      * receiver has no file of its own, e.g. interfaces or common classes).
      *
-     * Every emitted declaration is `internal` except the dlsym-resolved `kne_initNatives`,
-     * because the files cross-reference each other (per-class entries are bound by the
-     * bootstrap, entry bodies call the shared helpers) and Kotlin top-level `private`
-     * is file-scoped.
+     * Every emitted declaration is `internal` except the statically-bound entry functions
+     * (public + `@CName`: Kotlin/Native only exports public symbols from the shared library,
+     * and the JVM resolves them by the derived JNI symbol) and the dlsym-resolved
+     * `kne_initNatives`. The internal helpers cross-reference across files (entry bodies call
+     * the shared helpers), and Kotlin top-level `private` is file-scoped.
      *
      * @param jvmPackage package the JVM proxies are generated into; every registered class name and
      *   JNI descriptor is derived from it (see [jvmClassPath]). Falls back to the module's own
@@ -985,17 +1019,17 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 appendTryStart(body, envReconstructParams(params))
                 body.add("return %L\n", stableRefCreate(CodeBlock.of("%T(%L)", kotlinType(fq), callArgs(params))))
                 appendTryEnd(body, "0L")
+                val symbol = registerMethod(className, jvmName, paramDescriptor(params) + "J", fnName)
 
                 file.addFunction(
                     FunSpec.builder(fnName)
-                        .addModifiers(KModifier.INTERNAL)
+                        .addAnnotation(cnameAnnotation(symbol))
                         .addParameters(jniPrefixParams())
                         .addParameters(nativeParamSpecs(params))
                         .returns(PT.LONG)
                         .addCode(body.build())
                         .build(),
                 )
-                registerMethod(className, jvmName, paramDescriptor(params) + "J", fnName)
             }
         }
 
@@ -1252,20 +1286,20 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         emitReturn(body, CodeBlock.of("obj.%L(%L)", fn.name, callArgs(fn.params)), fn.returnType)
         appendTryEnd(body, errorReturnExpr(fn.returnType))
 
+        val symbol = registerMethod(
+            className, jvmName,
+            "(J" + paramDescriptor(fn.params).drop(1).dropLast(1) + ")" + JniTypes.returnDescriptor(fn.returnType, jvmPackage),
+            fnName,
+        )
         file.addFunction(
             FunSpec.builder(fnName)
-                .addModifiers(KModifier.INTERNAL)
+                .addAnnotation(cnameAnnotation(symbol))
                 .addParameters(jniPrefixParams())
                 .addParameter("handle", PT.LONG)
                 .addParameters(nativeParamSpecs(fn.params))
                 .apply { nativeReturnDecl(fn.returnType)?.let { returns(it) } }
                 .addCode(body.build())
                 .build(),
-        )
-        registerMethod(
-            className, jvmName,
-            "(J" + paramDescriptor(fn.params).drop(1).dropLast(1) + ")" + JniTypes.returnDescriptor(fn.returnType, jvmPackage),
-            fnName,
         )
     }
 
@@ -1503,16 +1537,16 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         emitReturn(getterBody, CodeBlock.of("obj.%L", prop.name), prop.type)
         appendTryEnd(getterBody, errorReturnExpr(prop.type))
 
+        val getterSymbol = registerMethod(className, getterJvm, "(J)" + JniTypes.returnDescriptor(prop.type, jvmPackage), getterFn)
         file.addFunction(
             FunSpec.builder(getterFn)
-                .addModifiers(KModifier.INTERNAL)
+                .addAnnotation(cnameAnnotation(getterSymbol))
                 .addParameters(jniPrefixParams())
                 .addParameter("handle", PT.LONG)
                 .apply { nativeReturnDecl(prop.type)?.let { returns(it) } }
                 .addCode(getterBody.build())
                 .build(),
         )
-        registerMethod(className, getterJvm, "(J)" + JniTypes.returnDescriptor(prop.type, jvmPackage), getterFn)
 
         if (prop.mutable) {
             val setterFn = "kne_${cls.simpleName}_set_${prop.name}"
@@ -1523,21 +1557,21 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             setterBody.add("obj.%L = %L\n", prop.name, callArgExpr("value", prop.type))
             appendTryEnd(setterBody, null)
 
-            file.addFunction(
-                FunSpec.builder(setterFn)
-                    .addModifiers(KModifier.INTERNAL)
-                    .addParameters(jniPrefixParams())
-                    .addParameter("handle", PT.LONG)
-                    .addParameters(nativeParamSpecs(listOf(KneParam("value", prop.type))))
-                    .addCode(setterBody.build())
-                    .build(),
-            )
-            registerMethod(
+            val setterSymbol = registerMethod(
                 className, setterJvm,
                 // Handle + the expanded value descriptor (String/Double/Boolean/arrays all widen
                 // differently), not a fixed "(JI)V".
                 "(J" + paramDescriptor(listOf(KneParam("value", prop.type))).drop(1) + "V",
                 setterFn,
+            )
+            file.addFunction(
+                FunSpec.builder(setterFn)
+                    .addAnnotation(cnameAnnotation(setterSymbol))
+                    .addParameters(jniPrefixParams())
+                    .addParameter("handle", PT.LONG)
+                    .addParameters(nativeParamSpecs(listOf(KneParam("value", prop.type))))
+                    .addCode(setterBody.build())
+                    .build(),
             )
         }
     }
@@ -1554,16 +1588,16 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         emitReturn(body, CodeBlock.of("%T.%L(%L)", kotlinType(cls.fqName), fn.name, callArgs(fn.params)), fn.returnType)
         appendTryEnd(body, errorReturnExpr(fn.returnType))
 
+        val symbol = registerMethod(className, jvmName, paramDescriptor(fn.params) + JniTypes.returnDescriptor(fn.returnType, jvmPackage), fnName)
         file.addFunction(
             FunSpec.builder(fnName)
-                .addModifiers(KModifier.INTERNAL)
+                .addAnnotation(cnameAnnotation(symbol))
                 .addParameters(jniPrefixParams())
                 .addParameters(nativeParamSpecs(fn.params))
                 .apply { nativeReturnDecl(fn.returnType)?.let { returns(it) } }
                 .addCode(body.build())
                 .build(),
         )
-        registerMethod(className, jvmName, paramDescriptor(fn.params) + JniTypes.returnDescriptor(fn.returnType, jvmPackage), fnName)
     }
 
     private fun appendCompanionProperty(file: FileSpec.Builder, prop: KneProperty, cls: KneClass) {
@@ -1576,15 +1610,15 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         emitReturn(getterBody, CodeBlock.of("%T.%L", kotlinType(cls.fqName), prop.name), prop.type)
         appendTryEnd(getterBody, errorReturnExpr(prop.type))
 
+        val getterSymbol = registerMethod(className, getterJvm, "()" + JniTypes.returnDescriptor(prop.type, jvmPackage), getterFn)
         file.addFunction(
             FunSpec.builder(getterFn)
-                .addModifiers(KModifier.INTERNAL)
+                .addAnnotation(cnameAnnotation(getterSymbol))
                 .addParameters(jniPrefixParams())
                 .apply { nativeReturnDecl(prop.type)?.let { returns(it) } }
                 .addCode(getterBody.build())
                 .build(),
         )
-        registerMethod(className, getterJvm, "()" + JniTypes.returnDescriptor(prop.type, jvmPackage), getterFn)
 
         if (prop.mutable) {
             val setterFn = "kne_${cls.simpleName}_companion_set_${prop.name}"
@@ -1594,18 +1628,18 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             setterBody.add("%T.%L = %L\n", kotlinType(cls.fqName), prop.name, callArgExpr("value", prop.type))
             appendTryEnd(setterBody, null)
 
+            val setterSymbol = registerMethod(
+                className, setterJvm,
+                paramDescriptor(listOf(KneParam("value", prop.type))) + "V",
+                setterFn,
+            )
             file.addFunction(
                 FunSpec.builder(setterFn)
-                    .addModifiers(KModifier.INTERNAL)
+                    .addAnnotation(cnameAnnotation(setterSymbol))
                     .addParameters(jniPrefixParams())
                     .addParameters(nativeParamSpecs(listOf(KneParam("value", prop.type))))
                     .addCode(setterBody.build())
                     .build(),
-            )
-            registerMethod(
-                className, setterJvm,
-                paramDescriptor(listOf(KneParam("value", prop.type))) + "V",
-                setterFn,
             )
         }
     }
@@ -1635,16 +1669,16 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         emitReturn(body, targetExpr, fn.returnType)
         appendTryEnd(body, errorReturnExpr(fn.returnType))
 
+        val symbol = registerMethod(hostClass, jvmName, paramDescriptor(fn.params) + JniTypes.returnDescriptor(fn.returnType, jvmPackage), fnName)
         file.addFunction(
             FunSpec.builder(fnName)
-                .addModifiers(KModifier.INTERNAL)
+                .addAnnotation(cnameAnnotation(symbol))
                 .addParameters(jniPrefixParams())
                 .addParameters(nativeParamSpecs(fn.params))
                 .apply { nativeReturnDecl(fn.returnType)?.let { returns(it) } }
                 .addCode(body.build())
                 .build(),
         )
-        registerMethod(hostClass, jvmName, paramDescriptor(fn.params) + JniTypes.returnDescriptor(fn.returnType, jvmPackage), fnName)
     }
 
     // ── extension functions ──────────────────────────────────────────────────
@@ -1678,20 +1712,20 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         emitReturn(body, CodeBlock.of("receiver.%L", extCall), fn.returnType)
         appendTryEnd(body, errorReturnExpr(fn.returnType))
 
+        val symbol = registerMethod(
+            hostClass, jvmName,
+            "(J" + paramDescriptor(fn.params).drop(1).dropLast(1) + ")" + JniTypes.returnDescriptor(fn.returnType, jvmPackage),
+            fnName,
+        )
         file.addFunction(
             FunSpec.builder(fnName)
-                .addModifiers(KModifier.INTERNAL)
+                .addAnnotation(cnameAnnotation(symbol))
                 .addParameters(jniPrefixParams())
                 .addParameter("receiverHandle", PT.LONG)
                 .addParameters(nativeParamSpecs(fn.params))
                 .apply { nativeReturnDecl(fn.returnType)?.let { returns(it) } }
                 .addCode(body.build())
                 .build(),
-        )
-        registerMethod(
-            hostClass, jvmName,
-            "(J" + paramDescriptor(fn.params).drop(1).dropLast(1) + ")" + JniTypes.returnDescriptor(fn.returnType, jvmPackage),
-            fnName,
         )
     }
 
@@ -1769,9 +1803,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         body.add("return %L\n", stableRefCreate(CodeBlock.of("_job")))
         appendTryEnd(body, "0L")
 
+        val symbol = registerMethod(
+            className, jvmName,
+            "(J" + paramDescriptor(fn.params).drop(1).dropLast(1) + "Ljava/lang/Object;)J",
+            fnName,
+        )
         file.addFunction(
             FunSpec.builder(fnName)
-                .addModifiers(KModifier.INTERNAL)
+                .addAnnotation(cnameAnnotation(symbol))
                 .addParameters(jniPrefixParams())
                 .addParameter("handle", PT.LONG)
                 .addParameters(nativeParamSpecs(fn.params))
@@ -1779,11 +1818,6 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .returns(PT.LONG)
                 .addCode(body.build())
                 .build(),
-        )
-        registerMethod(
-            className, jvmName,
-            "(J" + paramDescriptor(fn.params).drop(1).dropLast(1) + "Ljava/lang/Object;)J",
-            fnName,
         )
     }
 
@@ -2169,9 +2203,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         body.add("return %L\n", stableRefCreate(CodeBlock.of("KneFlowJob(_job, _credits)")))
         appendTryEnd(body, "0L")
 
+        val symbol = registerMethod(
+            className, jvmName,
+            "(J" + paramDescriptor(fn.params).drop(1).dropLast(1) + "Ljava/lang/Object;)J",
+            fnName,
+        )
         file.addFunction(
             FunSpec.builder(fnName)
-                .addModifiers(KModifier.INTERNAL)
+                .addAnnotation(cnameAnnotation(symbol))
                 .addParameters(jniPrefixParams())
                 .addParameter("handle", PT.LONG)
                 .addParameters(nativeParamSpecs(fn.params))
@@ -2179,11 +2218,6 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .returns(PT.LONG)
                 .addCode(body.build())
                 .build(),
-        )
-        registerMethod(
-            className, jvmName,
-            "(J" + paramDescriptor(fn.params).drop(1).dropLast(1) + "Ljava/lang/Object;)J",
-            fnName,
         )
     }
 
@@ -2279,14 +2313,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         emitReturn(body, CodeBlock.of("_fn(%L)", callArgs(params)), fnType.returnType)
         appendTryEnd(body, errorReturnExpr(fnType.returnType))
 
-        registerMethod(
+        val symbol = registerMethod(
             hostClass, "_kneInvokeFn$id",
             "(J" + paramDescriptor(params).drop(1).dropLast(1) + ")" +
                 JniTypes.returnDescriptor(fnType.returnType, jvmPackage),
             fnName,
         )
         return FunSpec.builder(fnName)
-            .addModifiers(KModifier.INTERNAL)
+            .addAnnotation(cnameAnnotation(symbol))
             .addParameters(jniPrefixParams())
             .addParameter("handle", PT.LONG)
             .addParameters(nativeParamSpecs(params))
@@ -3753,9 +3787,10 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         val hasFlow = module.classes.any { cls -> cls.methods.any { it.returnType is KneType.FLOW } } ||
             module.functions.any { it.returnType is KneType.FLOW }
 
+        val disposeSymbol = registerMethod(hostClass, "_kneDisposeRef", "(J)V", "kne_disposeRef")
         file.addFunction(
             FunSpec.builder("kne_disposeRef")
-                .addModifiers(KModifier.INTERNAL)
+                .addAnnotation(cnameAnnotation(disposeSymbol))
                 .addParameters(jniPrefixParams())
                 .addParameter("handle", PT.LONG)
                 .addCode(
@@ -3767,7 +3802,6 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 )
                 .build(),
         )
-        registerMethod(hostClass, "_kneDisposeRef", "(J)V", "kne_disposeRef")
 
         if (hasSuspend || hasFlow) {
             val cancelBody = CodeBlock.builder()
@@ -3786,21 +3820,22 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                     M_TO_C_POINTER, C_OPAQUE, JOB,
                 )
             }
+            val cancelSymbol = registerMethod(hostClass, "_kneCancelJob", "(J)V", "kne_cancelJob")
             file.addFunction(
                 FunSpec.builder("kne_cancelJob")
-                    .addModifiers(KModifier.INTERNAL)
+                    .addAnnotation(cnameAnnotation(cancelSymbol))
                     .addParameters(jniPrefixParams())
                     .addParameter("jobHandle", PT.LONG)
                     .addCode(cancelBody.build())
                     .build(),
             )
-            registerMethod(hostClass, "_kneCancelJob", "(J)V", "kne_cancelJob")
         }
 
         if (hasFlow) {
+            val creditSymbol = registerMethod(hostClass, "_kneFlowCredit", "(J)V", "kne_flowCredit")
             file.addFunction(
                 FunSpec.builder("kne_flowCredit")
-                    .addModifiers(KModifier.INTERNAL)
+                    .addAnnotation(cnameAnnotation(creditSymbol))
                     .addParameters(jniPrefixParams())
                     .addParameter("jobHandle", PT.LONG)
                     .addCode(
@@ -3812,7 +3847,6 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                     )
                     .build(),
             )
-            registerMethod(hostClass, "_kneFlowCredit", "(J)V", "kne_flowCredit")
         }
     }
 
@@ -3861,26 +3895,10 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         body.add("_kneClassCache[fqn] = _kneGlobal(env, %M { fns.FindClass!!.invoke(env, fqn.%M.ptr) })\n", M_MEM_SCOPED, M_CSTR)
         body.unindent()
         body.add("}\n")
-        for (reg in registrations.values) {
-            body.add("run {\n")
-            body.indent()
-            body.add("val clazz = fns.FindClass!!.invoke(env, %S.%M.ptr)\n", reg.className, M_CSTR)
-            body.add("check(clazz != null) { %S }\n", "FindClass failed: ${reg.className}")
-            body.add("_kneClassCache[%S] = _kneGlobal(env, clazz)\n", reg.className)
-            body.add("val methods = allocArray<%T>(%L)\n", flavor.jniNativeMethod, reg.methods.size)
-            reg.methods.forEachIndexed { i, m ->
-                body.add("methods[%L].name = %S.%M.ptr\n", i, m.jvmName, M_CSTR)
-                body.add("methods[%L].signature = %S.%M.ptr\n", i, m.sig, M_CSTR)
-                body.add("methods[%L].fnPtr = %M(::%L)\n", i, M_STATIC_C_FUNCTION, m.fnName)
-            }
-            body.add("val regRc = fns.RegisterNatives!!.invoke(env, clazz, methods, %L)\n", reg.methods.size)
-            body.add("check(regRc == 0) { %S + regRc }\n", "RegisterNatives failed for ${reg.className}: ")
-            body.unindent()
-            body.add("}\n")
-        }
-        // Classes with no natives to bind: the native side only needs a global ref for
-        // NewObjectA / GetMethodID later on (data classes, enums, sealed bases).
-        for (className in cachedClasses - registrations.keys) {
+        // Class refs for everything the runtime resolves by name later: proxy classes
+        // (fromNativeHandle / DC readers), data classes, enums, sealed bases. The natives
+        // themselves are statically bound via @CName and need no registration here.
+        for (className in registrations.keys + cachedClasses) {
             body.add("run {\n")
             body.indent()
             body.add("val clazz = fns.FindClass!!.invoke(env, %S.%M.ptr)\n", className, M_CSTR)
@@ -3895,15 +3913,19 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         body.unindent()
         body.add("} catch (e: Throwable) {\n")
         body.indent()
-        body.add("// Rethrow: swallowing this leaves every native unregistered and the JVM side\n")
-        body.add("// fails later with an opaque NoSuchMethodError far from the real cause.\n")
+        body.add("// Rethrow: swallowing this leaves the class caches uninitialized and every\n")
+        body.add("// later call fails with an opaque native error far from the real cause.\n")
         body.add("println(%S + e::class.simpleName + %S + e.message)\n", "kne: BOOTSTRAP FAILED: ", ": ")
         body.add("throw e\n")
         body.unindent()
         body.add("}\n")
 
         return FunSpec.builder("kne_initNatives")
-            .addKdoc("Resolved by the JVM via dlsym when KneRuntime.initNatives() runs. Registers all natives.\n")
+            .addKdoc(
+                "Resolved by the JVM via dlsym when KneRuntime.initNatives() runs. Initializes the JNI " +
+                    "runtime: grabs the JavaVM and caches the exception/box/collection/business class " +
+                    "refs. Natives themselves are statically bound via @CName symbols.\n",
+            )
             .addAnnotation(AnnotationSpec.builder(C_NAME).addMember("%S", bootstrapSymbol).build())
             .addParameters(jniPrefixParams())
             .addCode(body.build())

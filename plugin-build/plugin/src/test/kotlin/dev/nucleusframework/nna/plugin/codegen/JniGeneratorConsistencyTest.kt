@@ -15,14 +15,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Cross-generator consistency: what the native side registers via `RegisterNatives` must exist as an
- * `external fun` on the JVM proxy, on the class `FindClass` actually resolved.
+ * Cross-generator consistency: what the native side statically binds via `@CName` must exist as an
+ * `external fun` on the JVM proxy class the symbol was derived from.
  *
  * Regressions this guards:
  *  - member-name casing drift (`_kneGetCurrent` vs `_kneGetcurrent`),
- *  - registering on the Kotlin nested name (`pkg/Outer/Inner`) instead of the flat proxy class,
- *  - natives registered on a class that declares no such method (enums, sealed bases, `List<DC>`
- *    element builders), which makes `RegisterNatives` fail and leaves every other native unbound.
+ *  - binding on the Kotlin nested name (`pkg/Outer/Inner`) instead of the flat proxy class,
+ *  - mangling drift between the generator's `jniSymbol` and the JNI spec rule the JVM applies,
+ *  - statically binding a class that declares no such method (enums, sealed bases, `List<DC>`
+ *    element builders), which turns into an `UnsatisfiedLinkError` on first call.
  */
 class JniGeneratorConsistencyTest {
 
@@ -93,47 +94,58 @@ class JniGeneratorConsistencyTest {
         val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo").values.joinToString("\n")
         val proxies = JniProxyGenerator().generate(module(), "demo")
 
-        val registrations = parseRegistrations(native)
+        // The bootstrap's own dlsym entry is not a native binding: exclude it from the parity set.
+        val symbols = parseCnameSymbols(native) - setOf(expectedSymbol("demo/KneRuntime", "initNatives"))
         val declared = parseJvmNatives(proxies)
 
-        assertTrue("native generator registered nothing", registrations.isNotEmpty())
+        assertTrue("native generator emitted no static symbols", symbols.isNotEmpty())
 
-        registrations.forEach { (className, methodNames) ->
-            val jvmClass = className.substringAfterLast('/')
-            val jvmMethods = declared[jvmClass]
-            assertTrue("no JVM proxy declares class $jvmClass (native FindClass target $className)", jvmMethods != null)
-            val missing = methodNames - jvmMethods!!
-            assertTrue(
-                "$className registers natives the JVM side does not declare: $missing",
-                missing.isEmpty(),
-            )
-            val unregistered = jvmMethods - methodNames
-            assertTrue(
-                "$jvmClass declares natives that are never registered (UnsatisfiedLinkError): $unregistered",
-                unregistered.isEmpty(),
-            )
-        }
+        // Every JVM external must have a static symbol on the same flat class, and vice versa.
+        val expected = declared.flatMap { (jvmClass, methodNames) ->
+            methodNames.map { expectedSymbol("demo/$jvmClass", it) }
+        }.toSet()
+        val missing = expected - symbols
+        assertTrue(
+            "JVM externals without a static symbol (UnsatisfiedLinkError on call): $missing",
+            missing.isEmpty(),
+        )
+        val unbound = symbols - expected
+        assertTrue(
+            "static symbols with no JVM external (dead entries): $unbound",
+            unbound.isEmpty(),
+        )
     }
 
     @Test
     fun `registered classes use the flat proxy class name`() {
         val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo").values.joinToString("\n")
-        val targets = parseRegistrations(native).keys
+        val symbols = parseCnameSymbols(native)
 
-        assertTrue("nested class must be addressed by its flattened proxy name", targets.any { it.endsWith("/Calc_Adder") })
-        assertTrue("nested class must not be addressed by the Kotlin nested path", targets.none { it.contains("/Calc/") })
-        assertTrue("proxies live in the configured package", targets.all { it.startsWith("demo/") || it.startsWith("java/") })
+        // `demo.Calc.Adder` binds on the flat proxy class `demo.Calc_Adder`: the class part of
+        // the symbol escapes the flat name's underscore (`Calc_1Adder`).
+        assertTrue(
+            "nested class must be addressed by its flattened proxy name",
+            symbols.contains(expectedSymbol("demo/Calc_Adder", "_knePlus")),
+        )
+        assertTrue(
+            "no symbol may carry an unescaped underscore (nested-path or raw-name mistake)",
+            symbols.none { it.contains("Calc_Adder") },
+        )
+        assertTrue(
+            "proxies live in the configured package",
+            symbols.all { it.startsWith("Java_demo_") },
+        )
     }
 
     @Test
     fun `classes without jvm natives are only cached, never registered`() {
         val native = JniNativeBridgeGenerator.desktop().generate(module(), "demo").values.joinToString("\n")
-        val targets = parseRegistrations(native).keys
+        val symbols = parseCnameSymbols(native)
 
-        // Enums and sealed bases have no `external fun` on the JVM side, so binding anything to
-        // them would fail RegisterNatives and abort the whole bootstrap.
-        assertTrue("enum must not be a RegisterNatives target", targets.none { it.endsWith("/Operation") })
-        assertTrue("sealed base must not be a RegisterNatives target", targets.none { it.endsWith("/Outcome") })
+        // Enums and sealed bases have no `external fun` on the JVM side: a static symbol for them
+        // would never resolve, so the bootstrap must only cache their class refs.
+        assertTrue("enum must not be statically bound", symbols.none { it.startsWith("Java_demo_Operation") })
+        assertTrue("sealed base must not be statically bound", symbols.none { it.startsWith("Java_demo_Outcome") })
 
         // They still need a cached class ref for NewObjectA / ordinal lookups.
         assertTrue("enum class ref must still be cached", native.contains("\"demo/Operation\""))
@@ -181,7 +193,10 @@ class JniGeneratorConsistencyTest {
         val proxies = JniProxyGenerator().generate(withLambda, "demo")
 
         val id = JniTypes.functionId(KneType.FUNCTION(listOf(KneType.INT), KneType.UNIT))
-        assertTrue("native must register the invoke bridge", native.contains("\"_kneInvokeFn$id\""))
+        assertTrue(
+            "invoke bridge must be statically bound on KneNativeBindings",
+            parseCnameSymbols(native).contains(expectedSymbol("demo/KneNativeBindings", "_kneInvokeFn$id")),
+        )
         assertTrue("JVM side must declare the invoke bridge", proxies.getValue("KneRuntime.kt").contains("external fun _kneInvokeFn$id"))
         // The JVM proxy wraps the returned handle in a real lambda instead of casting it.
         assertTrue(
@@ -197,8 +212,8 @@ class JniGeneratorConsistencyTest {
 
         assertTrue("extension host must be the flat KneExt class", native.contains("\"demo/KneExt\""))
         assertTrue(
-            "native registration must take the receiver handle first",
-            parseRegistrations(native).getValue("demo/KneExt").contains("_kneExtExtended"),
+            "extension entry must be statically bound on KneExt",
+            parseCnameSymbols(native).contains(expectedSymbol("demo/KneExt", "_kneExtExtended")),
         )
         assertTrue(
             "JVM declaration must take the receiver handle first",
@@ -222,9 +237,9 @@ class JniGeneratorConsistencyTest {
         assertTrue("NDK struct has no trailing underscore", !android.contains("JNINativeInterface_"))
         assertTrue(android.contains("import platform.android.JNINativeInterface\n"))
 
-        // Registration parity: both variants bind exactly the same natives on the same classes,
-        // so one JVM proxy set serves both native families.
-        assertEquals(parseRegistrations(desktop), parseRegistrations(android))
+        // Registration parity: both variants statically bind exactly the same natives on the same
+        // classes, so one JVM proxy set serves both native families.
+        assertEquals(parseCnameSymbols(desktop), parseCnameSymbols(android))
     }
 
     @Test
@@ -248,25 +263,42 @@ class JniGeneratorConsistencyTest {
         val nestedFile = files.getValue("kne_Calc_Adder_bridges.kt")
         assertTrue("nested class entries live in their own file", nestedFile.contains("kne_Calc_Adder_plus("))
 
-        // All `run { ... }` registration blocks live in the bootstrap: parsing the common file
-        // alone must yield exactly the same table as parsing every file joined.
-        assertEquals(parseRegistrations(common), parseRegistrations(files.values.joinToString("\n")))
+        // The common file hosts the bootstrap entry, the top-level function entries (<Lib> host)
+        // and the shared KneNativeBindings natives; every class member's @CName lives in its
+        // per-class file.
+        val commonSymbols = parseCnameSymbols(common)
+        assertTrue(
+            "common file must host only bootstrap, top-level and KneNativeBindings entries",
+            commonSymbols.all {
+                it == expectedSymbol("demo/KneRuntime", "initNatives") ||
+                    it.startsWith("Java_demo_Demo__1") ||
+                    it.startsWith("Java_demo_KneNativeBindings__1")
+            },
+        )
+        assertTrue(
+            "class entries are statically bound in the class file",
+            parseCnameSymbols(calcFile).contains(expectedSymbol("demo/Calc", "_kneNew")),
+        )
     }
 
     // ── parsing helpers ──────────────────────────────────────────────────────
 
-    /** `FindClass` class → the native method names its `RegisterNatives` block binds. */
-    private fun parseRegistrations(native: String): Map<String, Set<String>> {
-        val classRegex = Regex("""FindClass!!\.invoke\(env, "([^"]+)"""")
-        val methodRegex = Regex("""methods\[\d+]\.name = "([^"]+)"""")
-        val out = LinkedHashMap<String, MutableSet<String>>()
-        // The bootstrap emits one `run { ... }` block per registered class.
-        native.split(Regex("""(?:^|\s)run \{""")).forEach { block ->
-            val className = classRegex.find(block)?.groupValues?.get(1) ?: return@forEach
-            val names = methodRegex.findAll(block).map { it.groupValues[1] }.toMutableSet()
-            if (names.isNotEmpty()) out.getOrPut(className) { mutableSetOf() }.addAll(names)
-        }
-        return out
+    /** All `@CName("...")` static JNI symbols emitted in [native]. */
+    private fun parseCnameSymbols(native: String): Set<String> =
+        Regex("""@CName\("([^"]+)"\)""").findAll(native).map { it.groupValues[1] }.toSet()
+
+    /**
+     * The JNI static symbol for a native on [classPath] named [jvmName], derived here straight
+     * from the spec's "Identify a Native Method" rule: every `_` inside a name escapes to `_1`,
+     * package separators and the class↔method boundary stay bare `_`. Mirrors the generator's
+     * `jniSymbol` — a divergence between the two is exactly what these tests exist to catch.
+     */
+    private fun expectedSymbol(classPath: String, jvmName: String): String {
+        val slash = classPath.lastIndexOf('/')
+        val pkg = if (slash == -1) "" else classPath.substring(0, slash).replace('/', '_')
+        val simple = if (slash == -1) classPath else classPath.substring(slash + 1)
+        val cls = if (pkg.isEmpty()) simple.replace("_", "_1") else "${pkg}_${simple.replace("_", "_1")}"
+        return "Java_${cls}_${jvmName.replace("_", "_1")}"
     }
 
     /** JVM class simple name → the `_kne*` external funs its generated file declares. */
