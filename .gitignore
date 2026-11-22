@@ -6,3 +6,7 @@
 .kotlin/
 build
 .junie/
+.codegraph
+**/gradle-wrapper.properties
+openspec
+AGENTS.md
