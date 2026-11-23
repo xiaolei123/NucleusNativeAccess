@@ -23,10 +23,10 @@ class Calculator {      →     @CName bridges (native)   →   class Calculator
 1. Plugin parses your `nativeMain` sources via Kotlin PSI and extracts the public API
 2. Generates `@CName` bridge functions with `StableRef` for object lifecycle (native side)
 3. Generates JVM proxy classes with `external fun` downcalls (JVM side)
-4. Compiles to a shared library (`.so` / `.dylib` / `.dll`)
-5. Bundles the native library into the JAR under `jniLibs/{platform}/` (standard Android ABI names like `arm64-v8a` for androidNative targets, `{os}-{arch}` like `win32-x64` for desktop)
-6. Generates GraalVM reachability metadata (reflection, resources, JNI config)
-7. JVM code calls the proxies transparently &mdash; every call crosses the JNI boundary into native
+4. Generates GraalVM reachability metadata (reflection, resources, JNI config)
+5. JVM code calls the proxies transparently &mdash; every call crosses the JNI boundary into native
+
+The plugin is generation-only: it does not build, bundle, or load the native library for you. You register a `sharedLib` binary and the loading configuration yourself (see step 5 of the Quick start).
 
 ## Quick start
 
@@ -72,10 +72,9 @@ kotlin {
 }
 
 kotlinNativeExport {
-    nativeLibName = "mylib"         // output: libmylib.so (release ~700KB)
+    nativeLibName = "mylib"         // library name baked into the generated code (KneRuntime.LIB_NAME)
     // nativePackage is auto-detected from your Kotlin source package declarations
     // nativePackage = "com.example"   // override only if needed
-    buildType = "release"           // "release" (default, optimized) or "debug"
 }
 ```
 
@@ -113,10 +112,38 @@ fun main() {
 
 No JNI. No annotations. No boilerplate. Just write Kotlin/Native and use it from JVM.
 
-### 5. Run
+### 5. Register and load the native library
+
+The plugin is generation-only &mdash; it does not build or bundle any binaries. Register a shared-lib binary on your native target and point the JVM test/run tasks at it (imports needed: `org.gradle.api.tasks.testing.Test`, `org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType`, `java.io.File`):
+
+```kotlin
+// build.gradle.kts
+kotlin {
+    linuxX64().binaries.sharedLib(
+        namePrefix = "mylib",   // must match nativeLibName
+        buildTypes = listOf(NativeBuildType.DEBUG, NativeBuildType.RELEASE),
+    )
+}
+
+tasks.withType<Test>().configureEach {
+    dependsOn(tasks.named("linkMylibReleaseSharedLinuxX64"))
+    useJUnitPlatform()
+    jvmArgs(
+        "-Djava.library.path=" + listOf(
+            layout.buildDirectory.dir("bin/linuxX64/mylibDebugShared").get().asFile,
+            layout.buildDirectory.dir("bin/linuxX64/mylibReleaseShared").get().asFile,
+        ).joinToString(File.pathSeparator) { it.absolutePath },
+        "--enable-native-access=ALL-UNNAMED",
+    )
+}
+```
+
+See [examples/](examples/) for complete working setups (benchmark, systeminfo, calculator).
+
+### 6. Run
 
 ```bash
-./gradlew jvmTest    # compiles native + generates bridges + runs JVM tests
+./gradlew jvmTest    # generates bridges, builds the native lib (wiring above), runs JVM tests
 ./gradlew run        # if using Compose Desktop / Nucleus
 ```
 
@@ -432,16 +459,14 @@ The bridge is designed for **Kotlin-level APIs** — clean classes, interfaces, 
 
 ```kotlin
 kotlinNativeExport {
-    // Name of the shared library (required)
-    // Produces: libmylib.so (Linux), libmylib.dylib (macOS), mylib.dll (Windows)
+    // Library name baked into the generated code (required)
+    // Must match the basename of the shared lib you build:
+    // libmylib.so (Linux), libmylib.dylib (macOS), mylib.dll (Windows)
     nativeLibName = "mylib"
 
     // Package for JVM proxies — auto-detected from your Kotlin source package declarations
     // Only set this if you have multiple packages and want to override the auto-detection
     // nativePackage = "com.example"
-
-    // Build type: "release" (default, ~700KB .so) or "debug" (~6MB .so)
-    buildType = "release"
 }
 ```
 
@@ -464,12 +489,15 @@ Generated file names:
 
 The generated code uses no `java.lang.foreign` APIs, so it runs on JDK 8+ and Android JVMs.
 
-For Android, the plugin already emits the native `.so` in the standard `jniLibs/<abi>/` layout at `build/generated/kne/nativeLib/jniLibs/` &mdash; wire that directory into your Android module and `System.loadLibrary()` picks it up from the APK:
+For Android, build the `.so` yourself with `androidNative*` targets and a `sharedLib` binary, then wire its output directory into your Android module so `System.loadLibrary()` picks it up from the APK:
 
 ```kotlin
+// KMP library module — androidNative targets
+androidNativeArm64().binaries.sharedLib(namePrefix = "mylib")
+
 // Android module build.gradle.kts
 android {
-    sourceSets["main"].jniLibs.srcDir("<lib-project>/build/generated/kne/nativeLib/jniLibs")
+    sourceSets["main"].jniLibs.srcDir("<lib-project>/build/bin/androidNativeArm64/mylibReleaseShared")
 }
 ```
 
@@ -480,13 +508,13 @@ The generated code requires:
 - **JVM**: JDK 8+ (no `java.lang.foreign` APIs used), recommended JDK 25
 - **Android**: any API level &mdash; automatic disposal on GC uses `PhantomReference` + `ReferenceQueue`, not `java.lang.ref.Cleaner` (API 33+)
 
-### Zero-config native library loading
+### Native library loading
 
 The generated `KneRuntime` uses a three-tier loading strategy:
 
 1. **`java.library.path`** &mdash; for development, packaged apps, or manual override
 2. **`System.loadLibrary`** (JNI mode) &mdash; Android `jniLibs/<abi>/` from the APK, or system-installed libraries
-3. **JAR extraction** &mdash; extracts from `jniLibs/{platform}/` in the classpath to a persistent cache (`~/.cache/kne/`)
+3. **JAR extraction** &mdash; extracts from `jniLibs/{platform}/` in the classpath to a persistent cache (`~/.cache/kne/`) &mdash; only works if you bundle the native lib into your JAR resources yourself (the plugin no longer does this)
 4. **Loader lookup** &mdash; fallback for GraalVM native-image (native lib beside the executable)
 
 ### Build performance & Gradle Cache
@@ -502,10 +530,10 @@ The generated `KneRuntime` uses a three-tier loading strategy:
 The plugin auto-generates GraalVM reachability metadata under `META-INF/native-image/kne/{libName}/`:
 
 - `reflect-config.json` &mdash; all generated proxy classes
-- `resource-config.json` &mdash; bundled native library resources
+- `resource-config.json` &mdash; native library resource patterns (relevant if you bundle the lib into the JAR)
 - `reachability-metadata.json` &mdash; JNI config, reflection, and resources
 
-For GraalVM native-image builds, the native `.so`/`.dylib` must be placed next to the executable (the plugin bundles it in the JAR for JVM, but native-image can't extract at runtime).
+For GraalVM native-image builds, the native `.so`/`.dylib` must be placed next to the executable (for JVM you can bundle it into the JAR resources yourself for the extraction tier, but native-image can't extract at runtime).
 
 ### Using with Compose Desktop / Nucleus
 
@@ -532,6 +560,12 @@ kotlin {
     jvmToolchain(25)
     linuxX64()  // or macosArm64(), mingwX64()
     jvm()
+
+    // The plugin is generation-only — build the native lib yourself:
+    linuxX64().binaries.sharedLib(
+        namePrefix = "mylib",
+        buildTypes = listOf(NativeBuildType.DEBUG, NativeBuildType.RELEASE),
+    )
 }
 
 kotlinNativeExport {
@@ -569,6 +603,8 @@ nucleus.application {
     jvmArgs += listOf("--enable-native-access=ALL-UNNAMED")
 }
 ```
+
+Since the plugin no longer bundles native libraries into JARs, make the built `.so` available to the app yourself: bundle `jniLibs/{platform}/` as JVM resources in the `:native` module so `KneRuntime`'s JAR-extraction tier finds it, or add the module's `build/bin/<target>/<lib>ReleaseShared` output to the app's `java.library.path`.
 
 This avoids any conflict between the Compose compiler and Kotlin/Native targets used for JNI bridges.
 
@@ -658,7 +694,7 @@ plugin-build/plugin/src/main/kotlin/dev/nucleusframework/nna/plugin/
 ├── tasks/
 │   └── GenerateNativeBridgesTask.kt  # Single task: PSI parse + native bridges + JVM proxies + GraalVM metadata
 ├── KotlinNativeExportExtension.kt
-└── KotlinNativeExportPlugin.kt       # Task wiring, native lib JAR bundling, test configuration
+└── KotlinNativeExportPlugin.kt       # Task wiring: generation task, cinterop, srcDir mounting, compile dependencies
 ```
 
 **Source analysis**: the plugin uses Kotlin PSI (`kotlin-compiler-embeddable`) for proper AST-based parsing, running in an isolated Gradle Worker classloader. This handles nested generics, function types, default parameters, multi-line constructors, and `suspend`/`Flow` detection natively &mdash; no regex.

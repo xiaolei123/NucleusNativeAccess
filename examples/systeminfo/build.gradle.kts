@@ -1,4 +1,7 @@
 import io.github.kdroidfilter.nucleus.desktop.application.dsl.TargetFormat
+import org.gradle.api.tasks.testing.Test
+import org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType
+import java.io.File
 
 plugins {
     kotlin("multiplatform")
@@ -86,6 +89,28 @@ kotlin {
             }
         }
     }
+
+    // ── Native lib + JVM test wiring ──
+    // The nna plugin is generation-only: build the shared lib here and point the
+    // JVM tests at it via java.library.path (the generated KneRuntime loads it via
+    // System.loadLibrary).
+    nativeTarget.binaries.sharedLib(
+        namePrefix = "systeminfo",
+        buildTypes = listOf(NativeBuildType.DEBUG, NativeBuildType.RELEASE),
+    )
+    val libCap = "systeminfo".replaceFirstChar { it.uppercaseChar() }
+    val targetCap = nativeTarget.name.replaceFirstChar { it.uppercaseChar() }
+    val libDirs = listOf("Debug", "Release").map { variant ->
+        layout.buildDirectory.dir("bin/${nativeTarget.name}/systeminfo${variant}Shared").get().asFile
+    }
+    tasks.withType<Test>().configureEach {
+        dependsOn(tasks.named("link${libCap}ReleaseShared$targetCap"))
+        useJUnitPlatform()
+        jvmArgs(
+            "-Djava.library.path=" + libDirs.joinToString(File.pathSeparator) { it.absolutePath },
+            "--enable-native-access=ALL-UNNAMED",
+        )
+    }
 }
 
 composeCompiler {
@@ -127,4 +152,3 @@ nucleus.application {
         macOS { bundleID = "com.example.systeminfo"; dockName = "SystemInfo" }
     }
 }
-

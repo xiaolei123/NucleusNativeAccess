@@ -5,12 +5,10 @@ import org.gradle.api.GradleException
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.logging.LogLevel
-import org.gradle.api.tasks.testing.Test
 import org.gradle.kotlin.dsl.*
 import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
 import org.jetbrains.kotlin.gradle.dsl.KotlinProjectExtension
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
-import org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType
 import org.jetbrains.kotlin.gradle.targets.jvm.KotlinJvmTarget
 import org.jetbrains.kotlin.konan.target.Family
 import java.io.File
@@ -21,14 +19,12 @@ import java.io.File
  * Pipeline (mirrors swift-java's build plugin approach):
  *  1. Scan nativeMain sources → extract public Kotlin API
  *  2. Generate @CName bridge code → added to nativeMain compilation
- *  3. Generate FFM proxy classes → added to jvmMain compilation
- *  4. Configure sharedLib binary on native targets (both debug + release)
- *  5. Set java.library.path on JVM tasks (both dirs, like swift-java)
+ *  3. Generate JVM proxy classes → added to jvmMain compilation
  *
- * Convention: both debug and release shared libs are always available as
- * binaries. [KotlinNativeExportExtension.buildType] selects which one the
- * test task links against. java.library.path includes both directories so
- * either variant can be picked up at runtime (same pattern as swift-java).
+ * The plugin is generation-only: it registers no native binaries and bundles
+ * no native libraries. Consumers register and load their own shared lib
+ * (e.g. `target.binaries.sharedLib(...)` plus `java.library.path` / jniLibs
+ * configuration).
  */
 class KotlinNativeExportPlugin : Plugin<Project> {
 
@@ -38,7 +34,6 @@ class KotlinNativeExportPlugin : Plugin<Project> {
 
         extension.nativeLibName.convention("nativelib")
         extension.nativePackage.convention("")
-        extension.buildType.convention("release")
 
         project.plugins.withId("org.jetbrains.kotlin.multiplatform") {
             project.afterEvaluate { configureKmp(project, extension) }
@@ -214,6 +209,13 @@ class KotlinNativeExportPlugin : Plugin<Project> {
 
         // Wire generated GraalVM metadata into JVM resources
         kotlin.sourceSets.findByName(jvmMainSourceSetName)?.resources?.srcDir(jvmResourcesDir)
+        // ProcessResources consumes the generated metadata dir, so it must wait for
+        // generation (the old native-lib bundling chain satisfied this transitively).
+        project.tasks.configureEach {
+            if (name == "${jvmTarget.name}ProcessResources" || name == "process${jvmMainTaskName}Resources") {
+                dependsOn(generateBridges)
+            }
+        }
 
         // Ensure every consumer compilation waits for generation: native compiles, JVM compiles,
         // and AGP Android (androidLibrary) compiles. Lazy so late-registered AGP tasks are covered.
@@ -225,103 +227,6 @@ class KotlinNativeExportPlugin : Plugin<Project> {
                     name == "compileKotlin$jvmTaskName" ||
                     name == "compileKotlin$jvmMainTaskName")
             if (isCompile) dependsOn(generateBridges)
-        }
-
-        // ── Native binaries (both debug + release, like swift-java) ──────────
-
-        kotlin.targets.filterIsInstance<KotlinNativeTarget>().forEach { target ->
-            target.binaries.sharedLib(
-                namePrefix = libName,
-                buildTypes = listOf(NativeBuildType.DEBUG, NativeBuildType.RELEASE),
-            )
-        }
-
-        // ── Bundle native libs (zero-config deployment: JAR resources + jniLibs layout) ──
-        //
-        // Output layout — doubles as the JAR resource root and an AGP `jniLibs.srcDir` target:
-        //   generated/kne/nativeLib/jniLibs/<platform>/<lib>
-        // where <platform> is a standard Android ABI name (arm64-v8a, ...) for androidNative
-        // targets and {os}-{arch} (win32-x64, darwin-aarch64, ...) for desktop targets.
-
-        val nativeTargets = kotlin.targets.filterIsInstance<KotlinNativeTarget>()
-        if (nativeTargets.isNotEmpty()) {
-            val libCap = libName.replaceFirstChar { it.uppercaseChar() }
-            val nativeLibResourceDir = project.layout.buildDirectory.dir("generated/kne/nativeLib")
-            val buildDir = project.layout.buildDirectory
-
-            val copyNativeLib = project.tasks.register("copyKneNativeLib") {
-                group = "kne"
-                description = "Copy native shared libraries into the jniLibs-layout resource dir for JAR/APK bundling"
-                dependsOn(nativeTargets.map { target ->
-                    "link${libCap}ReleaseShared${target.name.replaceFirstChar { it.uppercaseChar() }}"
-                })
-                doLast {
-                    // Clean the whole output dir so stale layouts (e.g. entries copied under a
-                    // previous layout scheme, or libs of targets that no longer exist) never
-                    // leak into the resources/JAR.
-                    nativeLibResourceDir.get().asFile.apply { deleteRecursively(); mkdirs() }
-                    nativeTargets.forEach { target ->
-                        val platform = mapTargetToPlatform(target.konanTarget.name)
-                        val releaseDir = buildDir
-                            .dir("bin/${target.name}/${libName}ReleaseShared").get().asFile
-                        val nativeFile = releaseDir.listFiles()?.firstOrNull { f ->
-                            f.extension in listOf("so", "dylib", "dll")
-                        } ?: run {
-                            logger.lifecycle("kne: No shared library built for ${target.name}, skipping jniLibs/$platform")
-                            return@forEach
-                        }
-                        // AGP's jniLibs requires the Android ABI naming (lib<name>.so); Kotlin/Native
-                        // already emits that prefix, normalize just in case.
-                        val destName = if (platform in ANDROID_ABIS && !nativeFile.name.startsWith("lib")) {
-                            "lib$libName.${nativeFile.extension}"
-                        } else {
-                            nativeFile.name
-                        }
-                        val destDir = nativeLibResourceDir.get().asFile.resolve("jniLibs/$platform")
-                        destDir.mkdirs()
-                        nativeFile.copyTo(destDir.resolve(destName), overwrite = true)
-                        logger.lifecycle("kne: Bundled ${nativeFile.name} → jniLibs/$platform/$destName")
-                    }
-                }
-            }
-
-            // Wire native lib resource dir into JVM resources
-            kotlin.sourceSets.findByName(jvmMainSourceSetName)?.resources?.srcDir(nativeLibResourceDir)
-
-            // Ensure processResources waits for the native lib copy
-            project.tasks.configureEach {
-                if (name == "${jvmTarget.name}ProcessResources" || name == "process${jvmMainTaskName}Resources") {
-                    dependsOn(copyNativeLib)
-                }
-            }
-        }
-
-        // ── JVM test configuration ───────────────────────────────────────────
-
-        configureJvmTestPaths(project, kotlin, extension)
-    }
-
-    /**
-     * Map a Kotlin/Native target to its `jniLibs` platform directory name: standard Android
-     * ABI names for androidNative targets (so the layout wires straight into AGP's
-     * `jniLibs.srcDir`), `{os}-{arch}` for desktop platforms. Accepts both the Kotlin target
-     * alias (`androidNativeArm64`) and the konan preset name (`android_arm64`).
-     */
-    private fun mapTargetToPlatform(targetName: String): String {
-
-        val isArm = targetName.contains("Arm")
-        val isArch = targetName.contains("aarch")
-        val isArm64 = targetName.contains("arm64") || targetName.contains("Arm64")
-
-        return when {
-            targetName.startsWith("androidNativeArm64") || targetName.startsWith("android_arm64") -> "arm64-v8a"
-            targetName.startsWith("androidNativeX64") || targetName.startsWith("android_x64") -> "x86_64"
-            targetName.startsWith("androidNativeArm32") || targetName.startsWith("android_arm32") -> "armeabi-v7a"
-            targetName.startsWith("androidNativeX86") || targetName.startsWith("android_x86") -> "x86"
-            targetName.startsWith("linux") -> if (isArm || isArch) "linux-aarch64" else "linux-x64"
-            targetName.startsWith("macos") -> if (isArm || isArm64) "darwin-aarch64" else "darwin-x64"
-            targetName.startsWith("mingw") -> if (isArm) "win32-arm64" else "win32-x64"
-            else -> "unknown"
         }
     }
 
@@ -338,58 +243,11 @@ class KotlinNativeExportPlugin : Plugin<Project> {
             .map { it.resolve("include") }
             .firstOrNull { it.resolve("jni.h").isFile }
 
-    /**
-     * Mirrors swift-java's convention: include both debug + release library
-     * directories in java.library.path so either variant is found at runtime.
-     * The [KotlinNativeExportExtension.buildType] determines which link task
-     * the test task depends on (only that variant is guaranteed to be built).
-     */
-    private fun configureJvmTestPaths(
-        project: Project,
-        kotlin: KotlinMultiplatformExtension,
-        extension: KotlinNativeExportExtension,
-    ) {
-        val nativeTarget = kotlin.targets
-            .filterIsInstance<KotlinNativeTarget>()
-            .firstOrNull() ?: return
-
-        val libName = extension.nativeLibName.get()
-        val targetName = nativeTarget.name
-        val targetCap = targetName.replaceFirstChar { it.uppercaseChar() }
-        val libCap = libName.replaceFirstChar { it.uppercaseChar() }
-
-        // Both variant output dirs (convention: build/bin/<target>/<lib><Variant>Shared/)
-        val debugDir = project.layout.buildDirectory
-            .dir("bin/$targetName/${libName}DebugShared").get().asFile
-        val releaseDir = project.layout.buildDirectory
-            .dir("bin/$targetName/${libName}ReleaseShared").get().asFile
-
-        // java.library.path includes both, separated by the platform path separator
-        val libraryPath = listOf(releaseDir, debugDir)
-            .joinToString(File.pathSeparator) { it.absolutePath.replace("\\", "/") }
-
-        // Link task for the configured build type
-        val buildType = extension.buildType.get().replaceFirstChar { it.uppercaseChar() }
-        val linkTaskName = "link${libCap}${buildType}Shared$targetCap"
-
-        project.tasks.withType<Test>().configureEach {
-            dependsOn(project.tasks.matching { it.name == linkTaskName })
-            useJUnitPlatform()
-            jvmArgs(
-                "-Djava.library.path=$libraryPath",
-                "--enable-native-access=ALL-UNNAMED",
-            )
-        }
-    }
-
     companion object {
         /** Legacy backend-selection property, rejected at configuration time since the FFM removal. */
         private const val BRIDGE_MODE_PROPERTY = "kne.bridgeMode"
 
         /** KotlinPoet version resolved into the Worker classpath; keep in sync with the version catalog. */
         private const val KOTLINPOET_VERSION = "2.4.0"
-
-        /** Standard Android ABI directory names used under `jniLibs/`. */
-        private val ANDROID_ABIS = setOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
     }
 }
