@@ -30,8 +30,14 @@ class KnePoetTypes(private val jvmPackage: String) {
     /** ClassName of a type generated flat in the JVM package (proxy, data class, enum). */
     fun jvmClass(simpleName: String): ClassName = ClassName(jvmPackage, simpleName)
 
+    /** ClassName of the generated KneRuntime object (lifecycle / registration entry point). */
+    fun runtimeObject(): ClassName = ClassName(jvmPackage, "KneRuntime")
+
     /** ClassName of the nested KneRuntime.Lease generated in the JVM package. */
     fun runtimeLease(): ClassName = ClassName(jvmPackage, "KneRuntime", "Lease")
+
+    /** ClassName of the nested KneRuntime.Disposal generated in the JVM package. */
+    fun runtimeDisposal(): ClassName = ClassName(jvmPackage, "KneRuntime", "Disposal")
 
     /** The public API type as it appears on generated JVM proxy members. */
     fun publicType(type: KneType): TypeName = when (type) {

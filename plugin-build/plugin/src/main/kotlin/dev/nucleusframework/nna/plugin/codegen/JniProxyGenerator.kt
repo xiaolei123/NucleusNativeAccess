@@ -32,7 +32,7 @@ import dev.nucleusframework.nna.plugin.ir.KneType
  * Generates JVM-side proxy classes for the JNI bridge backend, structured through KotlinPoet.
  *
  * The public API surface is identical to the pre-KotlinPoet string assembly (same class shapes,
- * same `AutoCloseable`/`Cleaner`/`Lease` lifecycle, same `KotlinNativeException`), but calls
+ * same `AutoCloseable`/`Lease` lifecycle, same `KotlinNativeException`), but calls
  * are dispatched through `external fun` (JNI native methods registered by the native
  * bootstrap via `RegisterNatives`) instead of FFM `MethodHandle` downcalls.
  *
@@ -114,6 +114,10 @@ class JniProxyGenerator {
             .addKdoc(
                 "Shared JNI runtime: loads the native shared library, triggers JNI native-method\n" +
                     "registration (RegisterNatives bootstrap) and manages object lifecycle.\n\n" +
+                    "Disposal on GC is driven by a [java.lang.ref.PhantomReference] reaper instead of\n" +
+                    "`java.lang.ref.Cleaner`, which only exists on Android API 33+/JDK 9+. This keeps\n" +
+                    "the proxies usable on every Android API level, and costs one daemon thread for\n" +
+                    "the whole module instead of one Cleaner thread per proxy class.\n\n" +
                     "No java.lang.foreign APIs are used; runs on JDK 8+ and Android JVMs.\n",
             )
             .addProperty(
@@ -131,6 +135,48 @@ class JniProxyGenerator {
             .addProperty(
                 PropertySpec.builder("registrationLock", KnePoetTypes.ANY, KModifier.PRIVATE)
                     .initializer("%T()", KnePoetTypes.ANY)
+                    .build(),
+            )
+            .addProperty(
+                PropertySpec.builder("refQueue", REFERENCE_QUEUE.parameterizedBy(KnePoetTypes.ANY), KModifier.PRIVATE)
+                    .addKdoc("Queue the JVM fills once a registered proxy becomes phantom-reachable.\n")
+                    .initializer("%T()", REFERENCE_QUEUE.parameterizedBy(KnePoetTypes.ANY))
+                    .build(),
+            )
+            .addProperty(
+                PropertySpec.builder(
+                    "pendingRefs",
+                    CONCURRENT_HASH_MAP.parameterizedBy(poet.runtimeDisposal(), KnePoetTypes.BOOLEAN),
+                    KModifier.PRIVATE,
+                )
+                    .addKdoc(
+                        "Strongly holds every in-flight [Disposal]. A PhantomReference that nothing\n" +
+                            "references could itself be collected before it is ever enqueued.\n",
+                    )
+                    .initializer(
+                        "%T()",
+                        CONCURRENT_HASH_MAP.parameterizedBy(poet.runtimeDisposal(), KnePoetTypes.BOOLEAN),
+                    )
+                    .build(),
+            )
+            .addProperty(
+                PropertySpec.builder("reaper", THREAD, KModifier.PRIVATE)
+                    .addKdoc("Single daemon thread that drains [refQueue] and runs disposal actions.\n")
+                    .initializer(reaperBlock(module.libName))
+                    .build(),
+            )
+            .addFunction(
+                FunSpec.builder("register")
+                    .addKdoc(
+                        "Arms automatic disposal: once [obj] is collected its action runs on the reaper\n" +
+                            "thread. [action] must not capture [obj], or it would stay reachable forever.\n",
+                    )
+                    .addParameter("obj", KnePoetTypes.ANY)
+                    .addParameter("action", LAMBDA_VOID)
+                    .addCode(
+                        "pendingRefs[%T(obj, refQueue, action)] = true\n",
+                        poet.runtimeDisposal(),
+                    )
                     .build(),
             )
             .addFunction(
@@ -176,6 +222,7 @@ class JniProxyGenerator {
                     .build(),
             )
             .addType(buildLease())
+            .addType(buildDisposal())
             .addFunction(
                 FunSpec.builder("leased")
                     .addKdoc("Keeps an object passed as an argument alive (not disposable) for the duration of a call.\n")
@@ -335,6 +382,34 @@ class JniProxyGenerator {
         )
         return lease.build()
     }
+
+    /**
+     * Builds the `PhantomReference` subclass the reaper enqueues. It deliberately carries no
+     * reference to the proxy it watches, so the proxy stays collectable.
+     */
+    private fun buildDisposal(): TypeSpec =
+        TypeSpec.classBuilder("Disposal")
+            .addKdoc(
+                "One pending automatic disposal. Holds the referent only through the\n" +
+                    "PhantomReference itself (which clears its referent on enqueue).\n",
+            )
+            .addModifiers(KModifier.PRIVATE)
+            .primaryConstructor(
+                FunSpec.constructorBuilder()
+                    .addParameter("referent", KnePoetTypes.ANY)
+                    .addParameter("queue", REFERENCE_QUEUE.parameterizedBy(KnePoetTypes.ANY))
+                    .addParameter("action", LAMBDA_VOID)
+                    .build(),
+            )
+            .addSuperclassConstructorParameter("referent")
+            .addSuperclassConstructorParameter("queue")
+            .superclass(PHANTOM_REFERENCE.parameterizedBy(KnePoetTypes.ANY))
+            .addProperty(
+                PropertySpec.builder("action", LAMBDA_VOID)
+                    .initializer("action")
+                    .build(),
+            )
+            .build()
 
     // ── Callback dispatchers ─────────────────────────────────────────────────
 
@@ -1061,7 +1136,8 @@ class JniProxyGenerator {
             .addKdoc(
                 "JVM proxy for Kotlin/Native class [$n].\n" +
                     "Dispatches every call into the native shared library via JNI (external fun).\n" +
-                    "Object lifecycle is managed via Java Cleaner (automatic GC) or explicit close().\n",
+                    "Object lifecycle is managed via automatic disposal on GC (KneRuntime reaper)\n" +
+                    "or explicit close().\n",
             )
             .addModifiers(modifiers)
             .primaryConstructor(
@@ -1143,13 +1219,6 @@ class JniProxyGenerator {
 
     private fun buildCompanion(cls: KneClass, isInstantiable: Boolean, poet: KnePoetTypes): TypeSpec {
         val companion = TypeSpec.companionObjectBuilder()
-        if (isInstantiable) {
-            companion.addProperty(
-                PropertySpec.builder("CLEANER", CLEANER, KModifier.PRIVATE)
-                    .initializer("%T.create()", CLEANER)
-                    .build(),
-            )
-        }
         companion.addProperty(
             PropertySpec.builder("_kneReg", KnePoetTypes.BOOLEAN, KModifier.PRIVATE)
                 .initializer("KneRuntime.ensureNativesRegistered()")
@@ -1190,6 +1259,9 @@ class JniProxyGenerator {
             // proxy with CallStaticObjectMethodA(clazz, "fromNativeHandle", "(J)L...;"), which only
             // resolves for a real static method. A plain `internal fun` would compile to an
             // instance method with a mangled name (fromNativeHandle$module) and never be found.
+            //
+            // The disposal action captures `lease`, never `obj`: capturing the proxy would keep it
+            // strongly reachable and the reaper would never fire.
             companion.addFunction(
                 FunSpec.builder("fromNativeHandle")
                     .addAnnotation(JVM_STATIC)
@@ -1198,7 +1270,7 @@ class JniProxyGenerator {
                     .addCode(
                         "val obj = %T(h)\n" +
                             "val lease = obj._lease\n" +
-                            "CLEANER.register(obj) { lease.close() }\n" +
+                            "KneRuntime.register(obj) { lease.close() }\n" +
                             "return obj\n",
                         poet.jvmClass(cls.simpleName),
                     )
@@ -2154,10 +2226,50 @@ class JniProxyGenerator {
             .add("}\n")
             .build()
 
+        /**
+         * Reaper: one daemon thread drains [refQueue] for the whole module. `kotlin.concurrent.thread`
+         * sets `isDaemon` before starting, and the property is initialised after [refQueue] /
+         * [pendingRefs], so the loop never observes an unset queue.
+         *
+         * The thread is named after the native library so a thread dump points straight at the
+         * module that owns it (several NNA modules can coexist in one JVM).
+         */
+        private fun reaperBlock(libName: String): CodeBlock = CodeBlock.builder()
+            .add("%M(name = %S, isDaemon = true, start = true) {\n", THREAD_FN, "$REAPER_THREAD_PREFIX-$libName")
+            .indent()
+            .add("while (true) {\n")
+            .indent()
+            .add("val ref = try {\n")
+            .indent()
+            .add("refQueue.remove() as Disposal\n")
+            .unindent()
+            .add("} catch (_: %T) {\n", INTERRUPTED_EXCEPTION)
+            .indent()
+            .add("continue\n")
+            .unindent()
+            .add("}\n")
+            .add("pendingRefs.remove(ref)\n")
+            .add("ref.clear()\n")
+            .add("%M { ref.action() }\n", RUN_CATCHING)
+            .unindent()
+            .add("}\n")
+            .unindent()
+            .add("}\n")
+            .build()
+
+        /** Prefix of the reaper daemon thread; the native library name is appended. */
+        private const val REAPER_THREAD_PREFIX = "kne-reaper"
+
         private val JVM_STATIC = ClassName("kotlin.jvm", "JvmStatic")
         private val JVM_FIELD = ClassName("kotlin.jvm", "JvmField")
         private val JVM_VOLATILE = ClassName("kotlin.jvm", "Volatile")
-        private val CLEANER = ClassName("java.lang.ref", "Cleaner")
+        private val PHANTOM_REFERENCE = ClassName("java.lang.ref", "PhantomReference")
+        private val REFERENCE_QUEUE = ClassName("java.lang.ref", "ReferenceQueue")
+        private val CONCURRENT_HASH_MAP = ClassName("java.util.concurrent", "ConcurrentHashMap")
+        private val THREAD = ClassName("java.lang", "Thread")
+        private val INTERRUPTED_EXCEPTION = ClassName("java.lang", "InterruptedException")
+        private val THREAD_FN = MemberName("kotlin.concurrent", "thread")
+        private val RUN_CATCHING = MemberName("kotlin", "runCatching")
         private val CANCELLABLE_CONTINUATION = ClassName("kotlinx.coroutines", "CancellableContinuation")
         private val CANCELLATION_EXCEPTION = ClassName("kotlinx.coroutines", "CancellationException")
         private val SEND_CHANNEL = ClassName("kotlinx.coroutines.channels", "SendChannel")
