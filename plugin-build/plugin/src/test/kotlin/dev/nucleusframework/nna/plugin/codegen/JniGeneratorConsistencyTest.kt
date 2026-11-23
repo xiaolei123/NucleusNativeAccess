@@ -19,7 +19,7 @@ import org.junit.Test
  * `external fun` on the JVM proxy class the symbol was derived from.
  *
  * Regressions this guards:
- *  - member-name casing drift (`_kneGetCurrent` vs `_kneGetcurrent`),
+ *  - member-name casing drift (`_nativeGetCurrent` vs `_nativeGetcurrent`),
  *  - binding on the Kotlin nested name (`pkg/Outer/Inner`) instead of the flat proxy class,
  *  - mangling drift between the generator's `jniSymbol` and the JNI spec rule the JVM applies,
  *  - statically binding a class that declares no such method (enums, sealed bases, `List<DC>`
@@ -125,7 +125,7 @@ class JniGeneratorConsistencyTest {
         // the symbol escapes the flat name's underscore (`Calc_1Adder`).
         assertTrue(
             "nested class must be addressed by its flattened proxy name",
-            symbols.contains(expectedSymbol("demo/Calc_Adder", "_knePlus")),
+            symbols.contains(expectedSymbol("demo/Calc_Adder", "_nativePlus")),
         )
         assertTrue(
             "no symbol may carry an unescaped underscore (nested-path or raw-name mistake)",
@@ -195,13 +195,13 @@ class JniGeneratorConsistencyTest {
         val id = JniTypes.functionId(KneType.FUNCTION(listOf(KneType.INT), KneType.UNIT))
         assertTrue(
             "invoke bridge must be statically bound on KneNativeBindings",
-            parseCnameSymbols(native).contains(expectedSymbol("demo/KneNativeBindings", "_kneInvokeFn$id")),
+            parseCnameSymbols(native).contains(expectedSymbol("demo/KneNativeBindings", "_nativeInvokeFn$id")),
         )
-        assertTrue("JVM side must declare the invoke bridge", proxies.getValue("KneRuntime.kt").contains("external fun _kneInvokeFn$id"))
+        assertTrue("JVM side must declare the invoke bridge", proxies.getValue("KneRuntime.kt").contains("external fun _nativeInvokeFn$id"))
         // The JVM proxy wraps the returned handle in a real lambda instead of casting it.
         assertTrue(
             "returned lambda must be wrapped, not cast",
-            proxies.getValue("Calc.kt").contains("_kneInvokeFn$id(_r, _p0)"),
+            proxies.getValue("Calc.kt").contains("_nativeInvokeFn$id(_r, _p0)"),
         )
     }
 
@@ -213,11 +213,11 @@ class JniGeneratorConsistencyTest {
         assertTrue("extension host must be the flat KneExt class", native.contains("\"demo/KneExt\""))
         assertTrue(
             "extension entry must be statically bound on KneExt",
-            parseCnameSymbols(native).contains(expectedSymbol("demo/KneExt", "_kneExtExtended")),
+            parseCnameSymbols(native).contains(expectedSymbol("demo/KneExt", "_nativeExtExtended")),
         )
         assertTrue(
             "JVM declaration must take the receiver handle first",
-            proxies.getValue("Extensions.kt").contains("_kneExtExtended(receiverHandle: Long, v: Int)"),
+            proxies.getValue("Extensions.kt").contains("_nativeExtExtended(receiverHandle: Long, v: Int)"),
         )
     }
 
@@ -243,25 +243,25 @@ class JniGeneratorConsistencyTest {
     }
 
     @Test
-    fun `bridge sources are split per class with the runtime in kne_bridges`() {
+    fun `bridge sources are split per class with the runtime in native_bridges`() {
         val files = JniNativeBridgeGenerator.desktop().generate(module(), "demo")
 
         // Common runtime file: helpers, top-level function entries and the bootstrap.
         val common = files.getValue(JniNativeBridgeGenerator.COMMON_FILE_BASE + ".kt")
-        assertTrue("bootstrap must live in the common file", common.contains("fun kne_initNatives"))
-        assertTrue("runtime helpers must live in the common file", common.contains("fun _kneFns("))
-        assertTrue("top-level function entries live in the common file", common.contains("kne_topLevel("))
+        assertTrue("bootstrap must live in the common file", common.contains("fun native_initNatives"))
+        assertTrue("runtime helpers must live in the common file", common.contains("fun _nativeFns("))
+        assertTrue("top-level function entries live in the common file", common.contains("native_topLevel("))
 
         // Per-class files hold only that class's entry points; the extension fn goes with the receiver.
-        val calcFile = files.getValue("kne_Calc_bridges.kt")
-        assertTrue("class ctor entries live in the class file", calcFile.contains("kne_Calc_new("))
-        assertTrue("extension entries live in the receiver's file", calcFile.contains("kne_Calc_ext_extended("))
-        assertTrue("class files must not host the bootstrap", !calcFile.contains("kne_initNatives"))
-        assertTrue("class files must not host runtime helpers", !calcFile.contains("fun _kneFns("))
+        val calcFile = files.getValue("native_Calc_bridges.kt")
+        assertTrue("class ctor entries live in the class file", calcFile.contains("native_Calc_new("))
+        assertTrue("extension entries live in the receiver's file", calcFile.contains("native_Calc_ext_extended("))
+        assertTrue("class files must not host the bootstrap", !calcFile.contains("native_initNatives"))
+        assertTrue("class files must not host runtime helpers", !calcFile.contains("fun _nativeFns("))
 
         // Nested classes get their own file under the flattened simple name.
-        val nestedFile = files.getValue("kne_Calc_Adder_bridges.kt")
-        assertTrue("nested class entries live in their own file", nestedFile.contains("kne_Calc_Adder_plus("))
+        val nestedFile = files.getValue("native_Calc_Adder_bridges.kt")
+        assertTrue("nested class entries live in their own file", nestedFile.contains("native_Calc_Adder_plus("))
 
         // The common file hosts the bootstrap entry, the top-level function entries (<Lib> host)
         // and the shared KneNativeBindings natives; every class member's @CName lives in its
@@ -277,7 +277,7 @@ class JniGeneratorConsistencyTest {
         )
         assertTrue(
             "class entries are statically bound in the class file",
-            parseCnameSymbols(calcFile).contains(expectedSymbol("demo/Calc", "_kneNew")),
+            parseCnameSymbols(calcFile).contains(expectedSymbol("demo/Calc", "_nativeNew")),
         )
     }
 
@@ -301,9 +301,9 @@ class JniGeneratorConsistencyTest {
         return "Java_${cls}_${jvmName.replace("_", "_1")}"
     }
 
-    /** JVM class simple name → the `_kne*` external funs its generated file declares. */
+    /** JVM class simple name → the `_native*` external funs its generated file declares. */
     private fun parseJvmNatives(proxies: Map<String, String>): Map<String, Set<String>> {
-        val externalRegex = Regex("""external fun (_kne\w+)""")
+        val externalRegex = Regex("""external fun (_native\w+)""")
         val out = LinkedHashMap<String, MutableSet<String>>()
         proxies.forEach { (fileName, content) ->
             val names = externalRegex.findAll(content).map { it.groupValues[1] }.toMutableSet()

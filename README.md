@@ -4,7 +4,7 @@
 
 A Gradle plugin that lets you use **Kotlin/Native code directly from the JVM** as if it were a regular JVM library. Classes, methods, properties, enums, nullable types, companion objects, exception propagation, callbacks &mdash; everything is transparent to the JVM developer.
 
-Under the hood, the plugin generates JNI bindings via `RegisterNatives` + `external fun` proxies, inspired by [swift-java](https://github.com/swiftlang/swift-java) and [swift-export-standalone](https://github.com/JetBrains/kotlin/tree/master/native/swift/swift-export-standalone). The generated code uses no `java.lang.foreign` APIs, so it runs on JDK 8+ and Android JVMs (API 26+).
+Under the hood, the plugin generates JNI bindings via `@CName` static symbols + `external fun` proxies, inspired by [swift-java](https://github.com/swiftlang/swift-java) and [swift-export-standalone](https://github.com/JetBrains/kotlin/tree/master/native/swift/swift-export-standalone). The generated code uses no `java.lang.foreign` APIs, so it runs on JDK 8+ and every Android API level.
 
 ## How it works
 
@@ -13,7 +13,7 @@ Kotlin/Native source           Plugin generates              JVM developer sees
 ──────────────────            ────────────────              ──────────────────
 class Calculator {      →     @CName bridges (native)   →   class Calculator : AutoCloseable {
   fun add(value: Int)         + StableRef lifecycle           fun add(value: Int): Int
-  val current: Int            + RegisterNatives bootstrap     val current: Int
+  val current: Int            + native_initNatives bootstrap  val current: Int
 }                             + output-buffer strings         // backed by native, via JNI external fun
                                                           }
 ```
@@ -107,7 +107,7 @@ fun main() {
     calc.add(3)
     println(calc.current)     // 8
     println(calc.describe())  // "Calculator(current=8)"
-    calc.close()              // releases the native object (also auto-GC'd via Cleaner)
+    calc.close()              // releases the native object (also disposed automatically on GC)
 }
 ```
 
@@ -175,8 +175,8 @@ Every test compiles Kotlin/Native → `libcalculator.so` (470+ exported symbols)
 | Data classes (commonMain) | ✅ | reuses existing JVM type, no proxy generated |
 | Suspend functions | ✅ | `suspendCancellableCoroutine` + bidirectional cancellation (110+ tests) |
 | Flow&lt;T&gt; return | ✅ | onNext/onError/onComplete callbacks with backpressure, no element dropped (50+ tests) |
-| Exception propagation | ✅ | `try/catch` wrapping, `KotlinNativeException` on JVM (thread-local, safe under concurrency) |
-| Object lifecycle | ✅ | `Cleaner` for GC + `close()` for explicit release; calls after `close()` throw `IllegalStateException` |
+| Exception propagation | ✅ | `try/catch` wrapping, `KotlinNativeException` on JVM (via JNI `ThrowNew`, safe under concurrency) |
+| Object lifecycle | ✅ | `PhantomReference` reaper disposes on GC + `close()` for explicit release; calls after `close()` throw `IllegalStateException` |
 
 ### Suspend functions
 
@@ -320,10 +320,10 @@ calc.addPoint(Point(3, 7))       // 10
 
 All native bridge functions are wrapped in `try/catch`. When an exception occurs:
 
-1. The native side captures the error message in a `@ThreadLocal` variable
-2. The JVM proxy calls `kne_hasError()` after every downcall
-3. If an error is detected, `kne_getLastError()` retrieves the message
-4. A `KotlinNativeException(message)` is thrown on the JVM side
+1. The native side catches it inside the generated `native_*` entry function
+2. It calls JNI `ThrowNew` on `KotlinNativeException` with the original message
+3. The exception is pending when control returns through the `external fun`, so the JVM throws it at the call site
+4. No error state is cached, so the next call starts clean
 
 ```kotlin
 try { calc.divide(0) } catch (e: KotlinNativeException) { println(e.message) }
@@ -450,9 +450,17 @@ kotlinNativeExport {
 The plugin generates JNI bridges exclusively:
 
 - Registers a `jni.h` cinterop on the native compilation (from the local JDK's include directory)
-- Generates `external fun` JVM proxies dispatched via `RegisterNatives`
-- Generates a `RegisterNatives` bootstrap in the native shared library
+- Generates `external fun` JVM proxies named `_native<Member>`, bound to the native side by symbol
+- Generates a `@CName` JNI entry function (`native_<Class>_<member>`) per bridge, so the JVM resolves each `external fun` directly &mdash; no runtime `RegisterNatives` table
+- Generates a single `native_initNatives` bootstrap (`@CName`) that caches the class/method/field IDs
 - Produces GraalVM JNI metadata
+
+Generated file names:
+
+| File | Contents |
+|------|----------|
+| `native_bridges.kt` | Shared helpers (`_nativeFns`, `_nativeKToJ`, …), top-level function entries, bootstrap |
+| `native_<Class>_bridges.kt` | That class's JNI entry points |
 
 The generated code uses no `java.lang.foreign` APIs, so it runs on JDK 8+ and Android JVMs.
 
@@ -470,7 +478,7 @@ android {
 The generated code requires:
 
 - **JVM**: JDK 8+ (no `java.lang.foreign` APIs used), recommended JDK 25
-- **Android**: API 26+ (`java.lang.ref.Cleaner`)
+- **Android**: any API level &mdash; automatic disposal on GC uses `PhantomReference` + `ReferenceQueue`, not `java.lang.ref.Cleaner` (API 33+)
 
 ### Zero-config native library loading
 
@@ -630,7 +638,7 @@ The plugin is inspired by two projects:
 
 - **[swift-export-standalone](https://github.com/JetBrains/kotlin/tree/master/native/swift/swift-export-standalone)** (JetBrains) &mdash; how Kotlin exports its API to Swift via C bridges. We adapted the approach: scan Kotlin sources, generate `@CName` bridge functions with `StableRef` for object lifecycle.
 
-- **[swift-java](https://github.com/swiftlang/swift-java)** (Apple) &mdash; how Swift code is made callable from Java through generated bindings. We adapted the binding generation approach: each class gets a JVM proxy, classes use `Cleaner` for GC safety.
+- **[swift-java](https://github.com/swiftlang/swift-java)** (Apple) &mdash; how Swift code is made callable from Java through generated bindings. We adapted the binding generation approach: each class gets a JVM proxy, and a reaper disposes the native peer once the proxy is unreachable.
 
 ```
 plugin-build/plugin/src/main/kotlin/dev/nucleusframework/nna/plugin/

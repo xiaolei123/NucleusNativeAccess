@@ -218,7 +218,7 @@ class JniProxyGenerator {
                     .addKdoc("Disposal action for a proxy; captures only the native handle so the proxy stays collectable.\n")
                     .addParameter("handle", KnePoetTypes.LONG)
                     .returns(LAMBDA_VOID)
-                    .addCode("return { runCatching { KneNativeBindings._kneDisposeRef(handle) } }\n")
+                    .addCode("return { runCatching { KneNativeBindings._nativeDisposeRef(handle) } }\n")
                     .build(),
             )
             .addType(buildLease())
@@ -282,12 +282,12 @@ class JniProxyGenerator {
         val bindings = TypeSpec.objectBuilder("KneNativeBindings")
             .addKdoc("Hosts the common JNI natives (dispose, suspend cancel, flow credits).\n")
             .addProperty(
-                PropertySpec.builder("_kneReg", KnePoetTypes.BOOLEAN, KModifier.PRIVATE)
+                PropertySpec.builder("_nativeReg", KnePoetTypes.BOOLEAN, KModifier.PRIVATE)
                     .initializer("KneRuntime.ensureNativesRegistered()")
                     .build(),
             )
             .addFunction(
-                FunSpec.builder("_kneDisposeRef")
+                FunSpec.builder("_nativeDisposeRef")
                     .addAnnotation(JVM_STATIC)
                     .addModifiers(KModifier.EXTERNAL)
                     .addParameter("handle", KnePoetTypes.LONG)
@@ -295,7 +295,7 @@ class JniProxyGenerator {
             )
         if (hasSuspend || hasFlow) {
             bindings.addFunction(
-                FunSpec.builder("_kneCancelJob")
+                FunSpec.builder("_nativeCancelJob")
                     .addAnnotation(JVM_STATIC)
                     .addModifiers(KModifier.EXTERNAL)
                     .addParameter("jobHandle", KnePoetTypes.LONG)
@@ -304,7 +304,7 @@ class JniProxyGenerator {
         }
         if (hasFlow) {
             bindings.addFunction(
-                FunSpec.builder("_kneFlowCredit")
+                FunSpec.builder("_nativeFlowCredit")
                     .addAnnotation(JVM_STATIC)
                     .addModifiers(KModifier.EXTERNAL)
                     .addParameter("jobHandle", KnePoetTypes.LONG)
@@ -320,7 +320,7 @@ class JniProxyGenerator {
                 poet,
             )
             bindings.addFunction(
-                FunSpec.builder("_kneInvokeFn$id")
+                FunSpec.builder("_nativeInvokeFn$id")
                     .addAnnotation(JVM_STATIC)
                     .addModifiers(KModifier.EXTERNAL)
                     .addParameters(params)
@@ -639,7 +639,7 @@ class JniProxyGenerator {
                     .build(),
             )
         // Unit suspend functions have no payload: native calls `onSuccess()V` (see
-        // _kneSuspendOk_Void), so the JVM overload must take no parameter. Declaring
+        // _nativeSuspendOk_Void), so the JVM overload must take no parameter. Declaring
         // `onSuccess(value: Unit)` would compile to `(Lkotlin/Unit;)V` and GetMethodID fails.
         val onSuccess = FunSpec.builder("onSuccess")
         if (type == KneType.UNIT) {
@@ -853,7 +853,7 @@ class JniProxyGenerator {
             onNext.addCode(
                 "try {\n" +
                     "%M { channel.send(Unit) }\n" +
-                    "KneNativeBindings._kneFlowCredit(jobId)\n" +
+                    "KneNativeBindings._nativeFlowCredit(jobId)\n" +
                     "} catch (_: Exception) {\n" +
                     "// channel closed: collection was cancelled\n" +
                     "}\n",
@@ -864,7 +864,7 @@ class JniProxyGenerator {
             onNext.addCode(
                 "try {\n" +
                     "%M { channel.send(%L) }\n" +
-                    "KneNativeBindings._kneFlowCredit(jobId)\n" +
+                    "KneNativeBindings._nativeFlowCredit(jobId)\n" +
                     "} catch (_: Exception) {\n" +
                     "// channel closed: collection was cancelled\n" +
                     "}\n",
@@ -1019,7 +1019,7 @@ class JniProxyGenerator {
     ): FileSpec {
         val obj = TypeSpec.objectBuilder(objectName)
             .addProperty(
-                PropertySpec.builder("_kneReg", KnePoetTypes.BOOLEAN, KModifier.PRIVATE)
+                PropertySpec.builder("_nativeReg", KnePoetTypes.BOOLEAN, KModifier.PRIVATE)
                     .initializer("KneRuntime.ensureNativesRegistered()")
                     .build(),
             )
@@ -1064,7 +1064,7 @@ class JniProxyGenerator {
         val ext = TypeSpec.objectBuilder("KneExt")
             .addModifiers(KModifier.INTERNAL)
             .addProperty(
-                PropertySpec.builder("_kneReg", KnePoetTypes.BOOLEAN, KModifier.PRIVATE)
+                PropertySpec.builder("_nativeReg", KnePoetTypes.BOOLEAN, KModifier.PRIVATE)
                     .initializer("KneRuntime.ensureNativesRegistered()")
                     .build(),
             )
@@ -1220,7 +1220,7 @@ class JniProxyGenerator {
     private fun buildCompanion(cls: KneClass, isInstantiable: Boolean, poet: KnePoetTypes): TypeSpec {
         val companion = TypeSpec.companionObjectBuilder()
         companion.addProperty(
-            PropertySpec.builder("_kneReg", KnePoetTypes.BOOLEAN, KModifier.PRIVATE)
+            PropertySpec.builder("_nativeReg", KnePoetTypes.BOOLEAN, KModifier.PRIVATE)
                 .initializer("KneRuntime.ensureNativesRegistered()")
                 .build(),
         )
@@ -1234,7 +1234,7 @@ class JniProxyGenerator {
             ctorVariants.forEachIndexed { index, params ->
                 val suffix = if (index == 0) "" else index.toString()
                 companion.addFunction(
-                    FunSpec.builder("_kneNew$suffix")
+                    FunSpec.builder("_nativeNew$suffix")
                         .addAnnotation(JVM_STATIC)
                         .addModifiers(KModifier.PRIVATE, KModifier.EXTERNAL)
                         .addParameters(externalParamSpecs(params, leadingHandle = false, poet))
@@ -1247,7 +1247,7 @@ class JniProxyGenerator {
                         .addParameters(publicParamSpecs(params, poet))
                         .returns(poet.jvmClass(cls.simpleName))
                         .addCode(
-                            "val h = _kneNew$suffix(%L)\n" +
+                            "val h = _nativeNew$suffix(%L)\n" +
                                 "return fromNativeHandle(h)\n",
                             ctorCallArgs(params, poet),
                         )
@@ -1334,16 +1334,16 @@ class JniProxyGenerator {
         return names
     }
 
-    private fun extName(name: String): String = "_kne" + name.replaceFirstChar { it.uppercaseChar() }
+    private fun extName(name: String): String = "_native" + name.replaceFirstChar { it.uppercaseChar() }
 
     /**
      * Builds an external-fun name from a prefix plus a member name, capitalizing the member so the
      * result matches the native side's `"$prefix" + name.replaceFirstChar { uppercase }` rule.
      *
-     * `extName("Get$current")` would yield `_kneGetcurrent`; this yields `_kneGetCurrent`.
+     * `extName("Get$current")` would yield `_nativeGetcurrent`; this yields `_nativeGetCurrent`.
      */
     private fun extName(prefix: String, member: String): String =
-        "_kne" + prefix + member.replaceFirstChar { it.uppercaseChar() }
+        "_native" + prefix + member.replaceFirstChar { it.uppercaseChar() }
 
     /** Declared external params for the JVM side (DCs flatten; maps expand into keys/values). */
     private fun externalParamSpecs(params: List<KneParam>, leadingHandle: Boolean, poet: KnePoetTypes): List<ParameterSpec> {
@@ -1704,7 +1704,7 @@ class JniProxyGenerator {
 
     /**
      * Wraps a native lambda handle (`_r`) in a real Kotlin function value whose body calls the
-     * `KneNativeBindings._kneInvokeFn<id>` bridge registered on the native side.
+     * `KneNativeBindings._nativeInvokeFn<id>` bridge registered on the native side.
      */
     private fun cbFnInvokeWrapExpr(fnType: KneType.FUNCTION, nullable: Boolean, poet: KnePoetTypes): CodeBlock {
         val id = JniTypes.functionId(fnType)
@@ -1723,9 +1723,9 @@ class JniProxyGenerator {
             }
         }.joinToCode(", ")
         val body = when (fnType.returnType) {
-            KneType.UNIT -> CodeBlock.of("KneNativeBindings._kneInvokeFn$id(%L); Unit", callArgs)
+            KneType.UNIT -> CodeBlock.of("KneNativeBindings._nativeInvokeFn$id(%L); Unit", callArgs)
             else -> CodeBlock.of(
-                "(KneNativeBindings._kneInvokeFn$id(%L)) as %T",
+                "(KneNativeBindings._nativeInvokeFn$id(%L)) as %T",
                 callArgs, poet.publicType(fnType.returnType),
             )
         }
@@ -1854,7 +1854,7 @@ class JniProxyGenerator {
         // counter lets close() dispose the native ref while other calls are still using it.
         return CodeBlock.builder()
             .add("_lease.acquire()\n")
-            .add("var _kneDispatched = false\n")
+            .add("var _nativeDispatched = false\n")
             .add("try {\n")
             .indent()
             .add("return %M { cont ->\n", M_SUSPEND_CANCELLABLE_COROUTINE)
@@ -1863,14 +1863,14 @@ class JniProxyGenerator {
                 "val job = %LAsync(%L, KneRuntime.KneSuspend%L(cont, _lease))\n",
                 extName(fn.name), allCallArgs(fn.params, "handle", poet), id,
             )
-            .add("_kneDispatched = true\n")
-            .add("cont.invokeOnCancellation { KneNativeBindings._kneCancelJob(job) }\n")
+            .add("_nativeDispatched = true\n")
+            .add("cont.invokeOnCancellation { KneNativeBindings._nativeCancelJob(job) }\n")
             .unindent()
             .add("}\n")
             .unindent()
             .add("} catch (t: Throwable) {\n")
             .indent()
-            .add("if (!_kneDispatched) _lease.release()\n")
+            .add("if (!_nativeDispatched) _lease.release()\n")
             .add("throw t\n")
             .unindent()
             .add("}\n")
@@ -1888,10 +1888,10 @@ class JniProxyGenerator {
             .add("return %M {\n", M_CALLBACK_FLOW)
             .indent()
             .add("_lease.acquire()\n")
-            .add("val _kneCb = KneRuntime.KneFlow%L(channel, _lease)\n", id)
+            .add("val _nativeCb = KneRuntime.KneFlow%L(channel, _lease)\n", id)
             .add("val job = try {\n")
             .indent()
-            .add("%LFlow(%L, _kneCb)\n", extName(fn.name), allCallArgs(fn.params, "handle", poet))
+            .add("%LFlow(%L, _nativeCb)\n", extName(fn.name), allCallArgs(fn.params, "handle", poet))
             .unindent()
             .add("} catch (t: Throwable) {\n")
             .indent()
@@ -1899,8 +1899,8 @@ class JniProxyGenerator {
             .add("throw t\n")
             .unindent()
             .add("}\n")
-            .add("_kneCb.jobId = job\n")
-            .add("%M { KneNativeBindings._kneCancelJob(job) }\n", M_AWAIT_CLOSE)
+            .add("_nativeCb.jobId = job\n")
+            .add("%M { KneNativeBindings._nativeCancelJob(job) }\n", M_AWAIT_CLOSE)
             .unindent()
             .add("}\n")
             .build()

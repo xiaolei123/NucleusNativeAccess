@@ -68,7 +68,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         const val FLOW_INITIAL_CREDITS = 64
 
         /** File base name (no extension) of the shared runtime bridge file. */
-        const val COMMON_FILE_BASE = "kne_bridges"
+        const val COMMON_FILE_BASE = "native_bridges"
 
         /** Desktop bridge variant: compiled against the generated knejni cinterop. */
         fun desktop(): JniNativeBridgeGenerator = JniNativeBridgeGenerator(JniBindingFlavor.DESKTOP)
@@ -158,7 +158,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
      * Derives the static JNI symbol for a native on [className] (`a/b/C` binary path) named
      * [jvmName], per the JNI spec's "Identify a Native Method" rule: every `_` inside a name
      * escapes to `_1`, package separators and the class↔method boundary stay bare `_`. E.g.
-     * `com/example/MathSuite_Adder` + `_knePlus` → `Java_com_example_MathSuite_1Adder__1knePlus`.
+     * `com/example/MathSuite_Adder` + `_nativePlus` → `Java_com_example_MathSuite_1Adder__1nativePlus`.
      */
     private fun jniSymbol(className: String, jvmName: String): String {
         val slash = className.lastIndexOf('/')
@@ -327,16 +327,16 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
     /**
      * Generates the native bridge sources split into files: a shared runtime file
-     * (`kne_bridges.kt` — the `_kne*` helpers, suspend/flow delivery, callback invoke helpers,
+     * (`native_bridges.kt` — the `_native*` helpers, suspend/flow delivery, callback invoke helpers,
      * common natives, top-level function entries and the bootstrap) plus one
-     * `kne_<Class>_bridges.kt` per business class holding that class's JNI entry points.
+     * `native_<Class>_bridges.kt` per business class holding that class's JNI entry points.
      * Extension functions are emitted into the receiver class's file (common file when the
      * receiver has no file of its own, e.g. interfaces or common classes).
      *
      * Every emitted declaration is `internal` except the statically-bound entry functions
      * (public + `@CName`: Kotlin/Native only exports public symbols from the shared library,
      * and the JVM resolves them by the derived JNI symbol) and the dlsym-resolved
-     * `kne_initNatives`. The internal helpers cross-reference across files (entry bodies call
+     * `native_initNatives`. The internal helpers cross-reference across files (entry bodies call
      * the shared helpers), and Kotlin top-level `private` is file-scoped.
      *
      * @param jvmPackage package the JVM proxies are generated into; every registered class name and
@@ -448,7 +448,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     private fun bridgeFileNames(classes: List<KneClass>): Map<KneClass, String> {
         val duplicated = classes.groupBy { it.simpleName }.filterValues { it.size > 1 }.keys
         return classes.associateWith { cls ->
-            if (cls.simpleName in duplicated) "kne_${cls.fqName.replace('.', '_')}_bridges" else "kne_${cls.simpleName}_bridges"
+            if (cls.simpleName in duplicated) "native_${cls.fqName.replace('.', '_')}_bridges" else "native_${cls.simpleName}_bridges"
         }
     }
 
@@ -502,14 +502,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     private fun buildRuntimeSurface(file: FileSpec.Builder) {
         // ── JNI environment ──
         file.addProperty(
-            PropertySpec.builder("_kneVM", C_POINTER.parameterizedBy(flavor.javaVmVar).copy(nullable = true), KModifier.INTERNAL)
+            PropertySpec.builder("_nativeVM", C_POINTER.parameterizedBy(flavor.javaVmVar).copy(nullable = true), KModifier.INTERNAL)
                 .mutable(true)
                 .initializer("null")
                 .build(),
         )
         file.addProperty(
             PropertySpec.builder(
-                "_kneClassCache",
+                "_nativeClassCache",
                 ClassName("kotlin.collections", "HashMap").parameterizedBy(PT.STRING, flavor.jobject.copy(nullable = true)),
                 KModifier.INTERNAL,
             )
@@ -518,14 +518,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addProperty(
-            PropertySpec.builder("_kneExceptionClass", flavor.jobject.copy(nullable = true), KModifier.INTERNAL)
+            PropertySpec.builder("_nativeExceptionClass", flavor.jobject.copy(nullable = true), KModifier.INTERNAL)
                 .mutable(true)
                 .initializer("null")
                 .build(),
         )
 
         file.addFunction(
-            FunSpec.builder("_kneFns")
+            FunSpec.builder("_nativeFns")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .returns(flavor.jniInterface)
@@ -534,7 +534,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         )
 
         file.addFunction(
-            FunSpec.builder("_kneAttached")
+            FunSpec.builder("_nativeAttached")
                 .addKdoc("Runs [block] with a JNIEnv attached to the current native thread (attach + detach).\n")
                 .addModifiers(KModifier.INTERNAL, KModifier.INLINE)
                 .addTypeVariable(TypeVariableName("T"))
@@ -546,7 +546,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
         // ── modified UTF-8 codec ──
         file.addFunction(
-            FunSpec.builder("_kneToModifiedUtf8")
+            FunSpec.builder("_nativeToModifiedUtf8")
                 .addKdoc("Encodes a Kotlin String as JNI modified UTF-8 (NUL → 0xC0 0x80, surrogates as CESU-8).\n")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("value", PT.STRING)
@@ -555,7 +555,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneFromModifiedUtf8")
+            FunSpec.builder("_nativeFromModifiedUtf8")
                 .addKdoc("Decodes JNI modified UTF-8 bytes (0xC0 0x80 → NUL, CESU-8 surrogate pairs combined).\n")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("bytes", PT.BYTE_ARRAY)
@@ -566,7 +566,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
         // ── strings ──
         file.addFunction(
-            FunSpec.builder("_kneJToK")
+            FunSpec.builder("_nativeJToK")
                 .addKdoc("Reads a jstring into a Kotlin String (null for JNI null).\n")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
@@ -576,7 +576,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneKToJ")
+            FunSpec.builder("_nativeKToJ")
                 .addKdoc("Creates a jstring from a Kotlin String.\n")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
@@ -588,7 +588,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
         // ── exceptions ──
         file.addFunction(
-            FunSpec.builder("_kneThrow")
+            FunSpec.builder("_nativeThrow")
                 .addKdoc("Throws KotlinNativeException(message) on the JVM.\n")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
@@ -597,27 +597,27 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_knePending")
+            FunSpec.builder("_nativePending")
                 .addKdoc("Whether a JVM exception is pending (safe to call with a pending exception).\n")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .returns(PT.BOOLEAN)
-                .addCode(CodeBlock.of("return _kneFns(env).ExceptionCheck!!.invoke(env) != 0.toUByte()\n"))
+                .addCode(CodeBlock.of("return _nativeFns(env).ExceptionCheck!!.invoke(env) != 0.toUByte()\n"))
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneGlobal")
+            FunSpec.builder("_nativeGlobal")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("ref", flavor.jobject.copy(nullable = true))
                 .returns(flavor.jobject.copy(nullable = true))
-                .addCode(CodeBlock.of("return if (ref == null) null else _kneFns(env).NewGlobalRef!!.invoke(env, ref)\n"))
+                .addCode(CodeBlock.of("return if (ref == null) null else _nativeFns(env).NewGlobalRef!!.invoke(env, ref)\n"))
                 .build(),
         )
 
         // ── primitive arrays ──
         file.addFunction(
-            FunSpec.builder("_kneReadJBytes")
+            FunSpec.builder("_nativeReadJBytes")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("arr", flavor.jobject.copy(nullable = true))
@@ -626,7 +626,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneNewJBytes")
+            FunSpec.builder("_nativeNewJBytes")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("values", PT.BYTE_ARRAY)
@@ -642,7 +642,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             Triple("Short", SHORT_VAR, PT.SHORT_ARRAY),
         )) {
             file.addFunction(
-                FunSpec.builder("_kneReadJ${k}Array")
+                FunSpec.builder("_nativeReadJ${k}Array")
                     .addModifiers(KModifier.INTERNAL)
                     .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                     .addParameter("arr", flavor.jobject.copy(nullable = true))
@@ -651,7 +651,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                     .build(),
             )
             file.addFunction(
-                FunSpec.builder("_kneNewJ${k}Array")
+                FunSpec.builder("_nativeNewJ${k}Array")
                     .addModifiers(KModifier.INTERNAL)
                     .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                     .addParameter("values", arrType)
@@ -661,7 +661,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             )
         }
         file.addFunction(
-            FunSpec.builder("_kneReadJBooleanArray")
+            FunSpec.builder("_nativeReadJBooleanArray")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("arr", flavor.jobject.copy(nullable = true))
@@ -669,7 +669,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .addCode(
                     CodeBlock.of(
                         """|if (arr == null) return null
-                           |val fns = _kneFns(env)
+                           |val fns = _nativeFns(env)
                            |val n = fns.GetArrayLength!!.invoke(env, arr)
                            |%M {
                            |    val tmp = allocArray<%T>(maxOf(1, n))
@@ -684,14 +684,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneNewJBooleanArray")
+            FunSpec.builder("_nativeNewJBooleanArray")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("values", PT.BOOLEAN_ARRAY)
                 .returns(flavor.jobject.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        """|val fns = _kneFns(env)
+                        """|val fns = _nativeFns(env)
                            |val arr = fns.NewBooleanArray!!.invoke(env, values.size) ?: return null
                            |if (values.isNotEmpty()) %M {
                            |    val tmp = allocArray<%T>(values.size)
@@ -709,50 +709,50 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
         // ── object arrays ──
         file.addFunction(
-            FunSpec.builder("_kneObjArrLen")
+            FunSpec.builder("_nativeObjArrLen")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("arr", flavor.jobject.copy(nullable = true))
                 .returns(PT.INT)
-                .addCode(CodeBlock.of("return if (arr == null) 0 else _kneFns(env).GetArrayLength!!.invoke(env, arr)\n"))
+                .addCode(CodeBlock.of("return if (arr == null) 0 else _nativeFns(env).GetArrayLength!!.invoke(env, arr)\n"))
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneObjArrGet")
+            FunSpec.builder("_nativeObjArrGet")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("arr", flavor.jobject.copy(nullable = true))
                 .addParameter("i", PT.INT)
                 .returns(flavor.jobject.copy(nullable = true))
-                .addCode(CodeBlock.of("return _kneFns(env).GetObjectArrayElement!!.invoke(env, arr, i)\n"))
+                .addCode(CodeBlock.of("return _nativeFns(env).GetObjectArrayElement!!.invoke(env, arr, i)\n"))
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneObjArrSet")
+            FunSpec.builder("_nativeObjArrSet")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("arr", flavor.jobject.copy(nullable = true))
                 .addParameter("i", PT.INT)
                 .addParameter("v", flavor.jobject.copy(nullable = true))
-                .addCode(CodeBlock.of("_kneFns(env).SetObjectArrayElement!!.invoke(env, arr, i, v)\n"))
+                .addCode(CodeBlock.of("_nativeFns(env).SetObjectArrayElement!!.invoke(env, arr, i, v)\n"))
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneNewObjArr")
+            FunSpec.builder("_nativeNewObjArr")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("size", PT.INT)
                 .addParameter("elemClass", flavor.jobject.copy(nullable = true))
                 .returns(flavor.jobject.copy(nullable = true))
-                .addCode(CodeBlock.of("return _kneFns(env).NewObjectArray!!.invoke(env, size, elemClass, null)\n"))
+                .addCode(CodeBlock.of("return _nativeFns(env).NewObjectArray!!.invoke(env, size, elemClass, null)\n"))
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneClass")
+            FunSpec.builder("_nativeClass")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("fqn", PT.STRING)
                 .returns(flavor.jobject.copy(nullable = true))
-                .addCode(CodeBlock.of("return _kneClassCache[fqn]\n"))
+                .addCode(CodeBlock.of("return _nativeClassCache[fqn]\n"))
                 .build(),
         )
 
@@ -761,7 +761,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         // *different* class with an identical descriptor. Resolving the id per call costs one
         // class-table lookup, orders of magnitude less than the JNI round trip it is used for.
         file.addFunction(
-            FunSpec.builder("_kneMethodId")
+            FunSpec.builder("_nativeMethodId")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("clazz", flavor.jobject.copy(nullable = true))
@@ -770,14 +770,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .returns(flavor.jmethodId.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "return %M { _kneFns(env).GetMethodID!!.invoke(env, clazz, name.%M.ptr, sig.%M.ptr) }\n",
+                        "return %M { _nativeFns(env).GetMethodID!!.invoke(env, clazz, name.%M.ptr, sig.%M.ptr) }\n",
                         M_MEM_SCOPED, M_CSTR, M_CSTR,
                     ),
                 )
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneStaticMethodId")
+            FunSpec.builder("_nativeStaticMethodId")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("clazz", flavor.jobject.copy(nullable = true))
@@ -786,14 +786,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .returns(flavor.jmethodId.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "return %M { _kneFns(env).GetStaticMethodID!!.invoke(env, clazz, name.%M.ptr, sig.%M.ptr) }\n",
+                        "return %M { _nativeFns(env).GetStaticMethodID!!.invoke(env, clazz, name.%M.ptr, sig.%M.ptr) }\n",
                         M_MEM_SCOPED, M_CSTR, M_CSTR,
                     ),
                 )
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneFieldId")
+            FunSpec.builder("_nativeFieldId")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("clazz", flavor.jobject.copy(nullable = true))
@@ -802,7 +802,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .returns(flavor.jfieldId.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "val raw = %M { _kneFns(env).GetFieldID!!.invoke(env, clazz, name.%M.ptr, sig.%M.ptr) }\n" +
+                        "val raw = %M { _nativeFns(env).GetFieldID!!.invoke(env, clazz, name.%M.ptr, sig.%M.ptr) }\n" +
                             "@%T(%S)\n" +
                             "return raw as %T?\n",
                         M_MEM_SCOPED, M_CSTR, M_CSTR,
@@ -823,7 +823,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     }
 
     private fun attachedBody(): CodeBlock = CodeBlock.of(
-        """|val vm = _kneVM ?: error(%S)
+        """|val vm = _nativeVM ?: error(%S)
            |%M {
            |    val envStorage = %M<%T<%T>>()
            |    val rc = vm.%M!!. %M!!.pointed!!.AttachCurrentThread!!.invoke(vm, envStorage.%M.%M(), null)
@@ -901,12 +901,12 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
     private val J_TO_K_BODY: CodeBlock = CodeBlock.of(
         """|if (str == null) return null
-           |val fns = _kneFns(env)
+           |val fns = _nativeFns(env)
            |val chars = fns.GetStringUTFChars!!.invoke(env, str, null) ?: return null
            |try {
            |    var len = 0
            |    while (chars[len] != 0.toByte()) len++
-           |    return _kneFromModifiedUtf8(ByteArray(len) { chars[it] })
+           |    return _nativeFromModifiedUtf8(ByteArray(len) { chars[it] })
            |} finally {
            |    fns.ReleaseStringUTFChars!!.invoke(env, str, chars)
            |}
@@ -915,12 +915,12 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     )
 
     private fun kToJBody(): CodeBlock = CodeBlock.of(
-        """|val bytes = _kneToModifiedUtf8(value)
+        """|val bytes = _nativeToModifiedUtf8(value)
            |%M {
            |    val buf = %M<%T>(bytes.size + 1)
            |    bytes.forEachIndexed { i, b -> buf[i] = b }
            |    buf[bytes.size] = 0
-           |    return _kneFns(env).NewStringUTF!!.invoke(env, buf)
+           |    return _nativeFns(env).NewStringUTF!!.invoke(env, buf)
            |}
            |
         """.trimMargin(),
@@ -928,10 +928,10 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     )
 
     private fun throwBody(): CodeBlock = CodeBlock.of(
-        """|val fns = _kneFns(env)
-           |val clazz = _kneExceptionClass
+        """|val fns = _nativeFns(env)
+           |val clazz = _nativeExceptionClass
            |%M {
-           |    val msg = _kneToModifiedUtf8(message)
+           |    val msg = _nativeToModifiedUtf8(message)
            |    val buf = allocArray<%T>(msg.size + 1)
            |    msg.forEachIndexed { i, b -> buf[i] = b }
            |    buf[msg.size] = 0
@@ -948,10 +948,10 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         M_MEM_SCOPED, "java/lang/RuntimeException", M_CSTR,
     )
 
-    /** Body for `_kneReadJ<k>Array`-style readers. */
+    /** Body for `_nativeReadJ<k>Array`-style readers. */
     private fun readArrayBody(varType: ClassName, arrType: String, regionFn: String): CodeBlock = CodeBlock.of(
         """|if (arr == null) return null
-           |val fns = _kneFns(env)
+           |val fns = _nativeFns(env)
            |val n = fns.GetArrayLength!!.invoke(env, arr)
            |%M {
            |    val tmp = %M<%T>(maxOf(1, n))
@@ -963,9 +963,9 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         M_MEM_SCOPED, M_ALLOC_ARRAY, varType, regionFn, arrType,
     )
 
-    /** Body for `_kneNewJ<k>Array`-style builders. [elemVar] is the forEachIndexed loop variable. */
+    /** Body for `_nativeNewJ<k>Array`-style builders. [elemVar] is the forEachIndexed loop variable. */
     private fun newArrayBody(varType: ClassName, arrType: String, newFn: String, regionFn: String, elemVar: String): CodeBlock = CodeBlock.of(
-        """|val fns = _kneFns(env)
+        """|val fns = _nativeFns(env)
            |val arr = fns.%L!!.invoke(env, values.size) ?: return null
            |if (values.isNotEmpty()) %M {
            |    val tmp = %M<%T>(values.size)
@@ -1012,8 +1012,8 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 for (drop in 1..trailingDefaults) add(cls.constructor.params.dropLast(drop))
             }
             for ((index, params) in ctorVariants.withIndex()) {
-                val fnName = "kne_${n}_new${if (index == 0) "" else index}"
-                val jvmName = if (index == 0) "_kneNew" else "_kneNew$index"
+                val fnName = "native_${n}_new${if (index == 0) "" else index}"
+                val jvmName = if (index == 0) "_nativeNew" else "_nativeNew$index"
 
                 val body = CodeBlock.builder()
                 appendTryStart(body, envReconstructParams(params))
@@ -1101,11 +1101,11 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         if (returnExpr != null) cb.indent().add("return %L\n", returnExpr).unindent()
         cb.add("} catch (e: Throwable) {\n")
         cb.indent()
-        cb.add("if (_knePending(env)) {\n")
+        cb.add("if (_nativePending(env)) {\n")
         if (returnExpr != null) cb.indent().add("return %L\n", returnExpr).unindent()
         cb.add("} else {\n")
         cb.indent()
-        cb.add("_kneThrow(env, e.message ?: e::class.simpleName ?: %S)\n", "Unknown error")
+        cb.add("_nativeThrow(env, e.message ?: e::class.simpleName ?: %S)\n", "Unknown error")
         if (returnExpr != null) cb.add("return %L\n", returnExpr)
         cb.unindent()
         cb.add("}\n")
@@ -1188,15 +1188,15 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             dc != null -> {
                 if (type is KneType.NULLABLE) {
                     cb.add("val _result = %L\n", expr)
-                    cb.add("return if (_result == null) null else _kneNewJvm%L(env, _result)\n", dc.simpleName)
+                    cb.add("return if (_result == null) null else _nativeNewJvm%L(env, _result)\n", dc.simpleName)
                 } else {
-                    cb.add("return _kneNewJvm%L(env, %L)\n", dc.simpleName, expr)
+                    cb.add("return _nativeNewJvm%L(env, %L)\n", dc.simpleName, expr)
                 }
             }
             type == KneType.UNIT -> cb.add("%L\n", expr)
             type == KneType.BOOLEAN -> cb.add("return if (%L) 1.toUByte() else 0.toUByte()\n", expr)
-            type == KneType.STRING -> cb.add("return _kneKToJ(env, %L)\n", expr)
-            type == KneType.BYTE_ARRAY -> cb.add("return _kneNewJBytes(env, %L)\n", expr)
+            type == KneType.STRING -> cb.add("return _nativeKToJ(env, %L)\n", expr)
+            type == KneType.BYTE_ARRAY -> cb.add("return _nativeNewJBytes(env, %L)\n", expr)
             type is KneType.ENUM -> cb.add("return (%L).ordinal\n", expr)
             type is KneType.OBJECT || type is KneType.INTERFACE -> cb.add("return %L\n", stableRefCreate(expr))
             type is KneType.FUNCTION -> cb.add("return %L\n", stableRefCreate(expr))
@@ -1234,7 +1234,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     /**
      * Expression producing a jarray from a Kotlin collection expression.
      *
-     * [envExpr] is the JNIEnv in scope at the call site. Everything routed through `_kneAttached`
+     * [envExpr] is the JNIEnv in scope at the call site. Everything routed through `_nativeAttached`
      * (suspend / flow completion on a coroutine worker) must pass the attached `_e`, because the
      * outer `env` belongs to the JVM caller's thread and is invalid there.
      */
@@ -1245,39 +1245,39 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     }
 
     private fun elemArrayBuildExpr(expr: CodeBlock, elemType: KneType, envExpr: String = "env"): CodeBlock = when (elemType) {
-        KneType.INT -> CodeBlock.of("_kneNewJIntArray(%L, (%L).toIntArray())", envExpr, expr)
-        KneType.LONG -> CodeBlock.of("_kneNewJLongArray(%L, (%L).toLongArray())", envExpr, expr)
-        KneType.DOUBLE -> CodeBlock.of("_kneNewJDoubleArray(%L, (%L).toDoubleArray())", envExpr, expr)
-        KneType.FLOAT -> CodeBlock.of("_kneNewJFloatArray(%L, (%L).toFloatArray())", envExpr, expr)
-        KneType.SHORT -> CodeBlock.of("_kneNewJShortArray(%L, (%L).toShortArray())", envExpr, expr)
-        KneType.BYTE -> CodeBlock.of("_kneNewJBytes(%L, run { val _b = %L; ByteArray(_b.size) { _b[it] } })", envExpr, expr)
-        KneType.BOOLEAN -> CodeBlock.of("_kneNewJBooleanArray(%L, (%L).toBooleanArray())", envExpr, expr)
-        is KneType.ENUM -> CodeBlock.of("_kneNewJIntArray(%L, run { val _l = %L; IntArray(_l.size) { _l[it].ordinal } })", envExpr, expr)
-        KneType.STRING -> CodeBlock.of("_kneNewJStrArr(%L, %L)", envExpr, expr)
+        KneType.INT -> CodeBlock.of("_nativeNewJIntArray(%L, (%L).toIntArray())", envExpr, expr)
+        KneType.LONG -> CodeBlock.of("_nativeNewJLongArray(%L, (%L).toLongArray())", envExpr, expr)
+        KneType.DOUBLE -> CodeBlock.of("_nativeNewJDoubleArray(%L, (%L).toDoubleArray())", envExpr, expr)
+        KneType.FLOAT -> CodeBlock.of("_nativeNewJFloatArray(%L, (%L).toFloatArray())", envExpr, expr)
+        KneType.SHORT -> CodeBlock.of("_nativeNewJShortArray(%L, (%L).toShortArray())", envExpr, expr)
+        KneType.BYTE -> CodeBlock.of("_nativeNewJBytes(%L, run { val _b = %L; ByteArray(_b.size) { _b[it] } })", envExpr, expr)
+        KneType.BOOLEAN -> CodeBlock.of("_nativeNewJBooleanArray(%L, (%L).toBooleanArray())", envExpr, expr)
+        is KneType.ENUM -> CodeBlock.of("_nativeNewJIntArray(%L, run { val _l = %L; IntArray(_l.size) { _l[it].ordinal } })", envExpr, expr)
+        KneType.STRING -> CodeBlock.of("_nativeNewJStrArr(%L, %L)", envExpr, expr)
         is KneType.OBJECT -> CodeBlock.of(
-            "_kneNewJLongArray(%L, run { val _l = %L; LongArray(_l.size) { %L } })",
+            "_nativeNewJLongArray(%L, run { val _l = %L; LongArray(_l.size) { %L } })",
             envExpr, expr, stableRefCreate(CodeBlock.of("_l[it] as %T", kotlinType(elemType.fqName))),
         )
         is KneType.INTERFACE -> CodeBlock.of(
-            "_kneNewJLongArray(%L, run { val _l = %L; LongArray(_l.size) { %L } })",
+            "_nativeNewJLongArray(%L, run { val _l = %L; LongArray(_l.size) { %L } })",
             envExpr, expr, stableRefCreate(CodeBlock.of("_l[it] as %T", kotlinType(elemType.fqName))),
         )
-        KneType.BYTE_ARRAY -> CodeBlock.of("_kneNewJBytesArr(%L, %L)", envExpr, expr)
-        is KneType.DATA_CLASS -> CodeBlock.of("_kneNewJObjArr(%L, %L.map { _kneNewJvm%L(%L, it) })", envExpr, expr, elemType.simpleName, envExpr)
-        is KneType.LIST -> CodeBlock.of("_kneNewJObjArr(%L, %L.map { %L })", envExpr, expr, nestedListJobject(elemType.elementType, CodeBlock.of("it"), envExpr))
-        is KneType.SET -> CodeBlock.of("_kneNewJObjArr(%L, %L.map { %L })", envExpr, expr, nestedListJobject(elemType.elementType, CodeBlock.of("it"), envExpr))
-        is KneType.MAP -> CodeBlock.of("_kneNewJObjArr(%L, %L.map { %L })", envExpr, expr, mapBuildExpr(CodeBlock.of("it"), elemType, envExpr))
+        KneType.BYTE_ARRAY -> CodeBlock.of("_nativeNewJBytesArr(%L, %L)", envExpr, expr)
+        is KneType.DATA_CLASS -> CodeBlock.of("_nativeNewJObjArr(%L, %L.map { _nativeNewJvm%L(%L, it) })", envExpr, expr, elemType.simpleName, envExpr)
+        is KneType.LIST -> CodeBlock.of("_nativeNewJObjArr(%L, %L.map { %L })", envExpr, expr, nestedListJobject(elemType.elementType, CodeBlock.of("it"), envExpr))
+        is KneType.SET -> CodeBlock.of("_nativeNewJObjArr(%L, %L.map { %L })", envExpr, expr, nestedListJobject(elemType.elementType, CodeBlock.of("it"), envExpr))
+        is KneType.MAP -> CodeBlock.of("_nativeNewJObjArr(%L, %L.map { %L })", envExpr, expr, mapBuildExpr(CodeBlock.of("it"), elemType, envExpr))
         else -> CodeBlock.of("null")
     }
 
     private fun mapBuildExpr(expr: CodeBlock, type: KneType.MAP, envExpr: String = "env"): CodeBlock =
-        CodeBlock.of("_kneNewJvmMap_%L_%L(%L, %L)", payloadId(type.keyType), payloadId(type.valueType), envExpr, expr)
+        CodeBlock.of("_nativeNewJvmMap_%L_%L(%L, %L)", payloadId(type.keyType), payloadId(type.valueType), envExpr, expr)
 
     // ── regular methods ──────────────────────────────────────────────────────
 
     private fun appendMethod(file: FileSpec.Builder, fn: KneFunction, cls: KneClass) {
-        val fnName = "kne_${cls.simpleName}_${fn.name}"
-        val jvmName = "_kne${fn.name.replaceFirstChar { it.uppercaseChar() }}"
+        val fnName = "native_${cls.simpleName}_${fn.name}"
+        val jvmName = "_native${fn.name.replaceFirstChar { it.uppercaseChar() }}"
         val className = jvmClassPath(cls.simpleName)
 
         val body = CodeBlock.builder()
@@ -1321,10 +1321,10 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                         cb.add("val %LObj = %L\n", p.name, ctorExpr)
                     }
                 }
-                p.type == KneType.STRING -> cb.add("val %LStr = _kneJToK(env, %L) ?: \"\"\n", p.name, p.name)
+                p.type == KneType.STRING -> cb.add("val %LStr = _nativeJToK(env, %L) ?: \"\"\n", p.name, p.name)
                 p.type is KneType.NULLABLE && p.type.inner == KneType.STRING ->
-                    cb.add("val %LStr = _kneJToK(env, %L)\n", p.name, p.name)
-                p.type == KneType.BYTE_ARRAY -> cb.add("val %LArr = _kneReadJBytes(env, %L) ?: ByteArray(0)\n", p.name, p.name)
+                    cb.add("val %LStr = _nativeJToK(env, %L)\n", p.name, p.name)
+                p.type == KneType.BYTE_ARRAY -> cb.add("val %LArr = _nativeReadJBytes(env, %L) ?: ByteArray(0)\n", p.name, p.name)
                 p.type is KneType.FUNCTION -> appendCallbackLambda(cb, p.name, p.type)
                 p.type is KneType.NULLABLE && p.type.inner is KneType.FUNCTION ->
                     appendCallbackLambda(cb, p.name, p.type.inner as KneType.FUNCTION, nullable = true)
@@ -1347,13 +1347,13 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         dc.fields.forEach { f ->
             val name = "${prefix}_${f.name}"
             when (val t = f.type) {
-                KneType.STRING -> cb.add("val %L = _kneJToK(env, %L) ?: \"\"\n", name, name)
+                KneType.STRING -> cb.add("val %L = _nativeJToK(env, %L) ?: \"\"\n", name, name)
                 KneType.BOOLEAN -> cb.add("val %L = %L != 0.toUByte()\n", name, name)
                 is KneType.DATA_CLASS -> readDcFields(cb, t, name)
                 is KneType.OBJECT -> cb.add("val %L = %L\n", name, stableRefGet(name, t.fqName))
                 is KneType.INTERFACE -> cb.add("val %L = %L\n", name, stableRefGet(name, t.fqName))
                 is KneType.ENUM -> cb.add("val %L = %T.entries[%L]\n", name, kotlinType(t.fqName), name)
-                KneType.BYTE_ARRAY -> cb.add("val %L = _kneReadJBytes(env, %L) ?: ByteArray(0)\n", name, name)
+                KneType.BYTE_ARRAY -> cb.add("val %L = _nativeReadJBytes(env, %L) ?: ByteArray(0)\n", name, name)
                 is KneType.LIST -> cb.add("val %L = %L\n", name, collReadExpr(name, t.elementType, "List", isNull = false))
                 is KneType.SET -> cb.add("val %L = %L\n", name, collReadExpr(name, t.elementType, "Set", isNull = false))
                 else -> {}
@@ -1431,29 +1431,29 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     /** Reads a collection jarray payload into a Kotlin collection expression. */
     private fun collReadExpr(name: String, elemType: KneType, collKind: String, isNull: Boolean): CodeBlock {
         val readList: CodeBlock = when (elemType) {
-            KneType.INT -> CodeBlock.of("_kneReadJIntArray(env, %L)?.toList() ?: emptyList()", name)
-            KneType.LONG -> CodeBlock.of("_kneReadJLongArray(env, %L)?.toList() ?: emptyList()", name)
-            KneType.DOUBLE -> CodeBlock.of("_kneReadJDoubleArray(env, %L)?.toList() ?: emptyList()", name)
-            KneType.FLOAT -> CodeBlock.of("_kneReadJFloatArray(env, %L)?.toList() ?: emptyList()", name)
-            KneType.SHORT -> CodeBlock.of("_kneReadJShortArray(env, %L)?.toList() ?: emptyList()", name)
-            KneType.BYTE -> CodeBlock.of("_kneReadJBytes(env, %L)?.toList() ?: emptyList()", name)
-            KneType.BOOLEAN -> CodeBlock.of("_kneReadJBooleanArray(env, %L)?.toList() ?: emptyList()", name)
+            KneType.INT -> CodeBlock.of("_nativeReadJIntArray(env, %L)?.toList() ?: emptyList()", name)
+            KneType.LONG -> CodeBlock.of("_nativeReadJLongArray(env, %L)?.toList() ?: emptyList()", name)
+            KneType.DOUBLE -> CodeBlock.of("_nativeReadJDoubleArray(env, %L)?.toList() ?: emptyList()", name)
+            KneType.FLOAT -> CodeBlock.of("_nativeReadJFloatArray(env, %L)?.toList() ?: emptyList()", name)
+            KneType.SHORT -> CodeBlock.of("_nativeReadJShortArray(env, %L)?.toList() ?: emptyList()", name)
+            KneType.BYTE -> CodeBlock.of("_nativeReadJBytes(env, %L)?.toList() ?: emptyList()", name)
+            KneType.BOOLEAN -> CodeBlock.of("_nativeReadJBooleanArray(env, %L)?.toList() ?: emptyList()", name)
             is KneType.ENUM -> CodeBlock.of(
-                "_kneReadJIntArray(env, %L)?.toList()?.map { %T.entries[it] } ?: emptyList()", name, kotlinType(elemType.fqName),
+                "_nativeReadJIntArray(env, %L)?.toList()?.map { %T.entries[it] } ?: emptyList()", name, kotlinType(elemType.fqName),
             )
-            KneType.STRING -> CodeBlock.of("_kneReadJStrList(env, %L) ?: emptyList()", name)
+            KneType.STRING -> CodeBlock.of("_nativeReadJStrList(env, %L) ?: emptyList()", name)
             is KneType.OBJECT -> CodeBlock.of(
-                "_kneReadJLongArray(env, %L)?.map { %L }", name, stableRefGet("it", elemType.fqName),
+                "_nativeReadJLongArray(env, %L)?.map { %L }", name, stableRefGet("it", elemType.fqName),
             )
             is KneType.INTERFACE -> CodeBlock.of(
-                "_kneReadJLongArray(env, %L)?.map { %L }", name, stableRefGet("it", elemType.fqName),
+                "_nativeReadJLongArray(env, %L)?.map { %L }", name, stableRefGet("it", elemType.fqName),
             )
-            KneType.BYTE_ARRAY -> CodeBlock.of("_kneReadJBytesList(env, %L)", name)
-            is KneType.LIST -> CodeBlock.of("_kneReadJNestedList(env, %L, %S).map { it as %T }", name, payloadId(elemType), nativePublic(elemType))
-            is KneType.SET -> CodeBlock.of("_kneReadJNestedList(env, %L, %S).map { it as %T }.toSet()", name, payloadId(elemType), nativePublic(elemType))
-            is KneType.MAP -> CodeBlock.of("_kneReadJNestedList(env, %L, %S).map { it as %T }", name, payloadId(elemType), nativePublic(elemType))
+            KneType.BYTE_ARRAY -> CodeBlock.of("_nativeReadJBytesList(env, %L)", name)
+            is KneType.LIST -> CodeBlock.of("_nativeReadJNestedList(env, %L, %S).map { it as %T }", name, payloadId(elemType), nativePublic(elemType))
+            is KneType.SET -> CodeBlock.of("_nativeReadJNestedList(env, %L, %S).map { it as %T }.toSet()", name, payloadId(elemType), nativePublic(elemType))
+            is KneType.MAP -> CodeBlock.of("_nativeReadJNestedList(env, %L, %S).map { it as %T }", name, payloadId(elemType), nativePublic(elemType))
             is KneType.DATA_CLASS -> CodeBlock.of(
-                "List(_kneObjArrLen(env, %L)) { _kneReadJvm%L(env, _kneObjArrGet(env, %L, it)) }", name, elemType.simpleName, name,
+                "List(_nativeObjArrLen(env, %L)) { _nativeReadJvm%L(env, _nativeObjArrGet(env, %L, it)) }", name, elemType.simpleName, name,
             )
             else -> CodeBlock.of("null")
         }
@@ -1498,10 +1498,10 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     /** The lambda body: invoke the JVM dispatcher, then check for pending JVM exceptions. */
     private fun callbackResultExpr(fnType: KneType.FUNCTION, id: String, jobjectName: String, invokeArgs: CodeBlock): CodeBlock {
         val call = CodeBlock.of(
-            "_kneInvoke_%L(env, %L%L)", id, jobjectName,
+            "_nativeInvoke_%L(env, %L%L)", id, jobjectName,
             if (invokeArgs.isEmpty()) EMPTY_CODE else CodeBlock.of(", %L", invokeArgs),
         )
-        val guard = CodeBlock.of("if (_knePending(env)) throw KneJniCallbackPendingException(); ")
+        val guard = CodeBlock.of("if (_nativePending(env)) throw KneJniCallbackPendingException(); ")
         return when (fnType.returnType) {
             KneType.UNIT -> CodeBlock.of("%L; %L", call, guard)
             KneType.BOOLEAN -> CodeBlock.of("run { val _r = %L; %L_r != 0.toUByte() }", call, guard)
@@ -1529,8 +1529,8 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     private fun appendProperty(file: FileSpec.Builder, prop: KneProperty, cls: KneClass) {
         val className = jvmClassPath(cls.simpleName)
 
-        val getterFn = "kne_${cls.simpleName}_get_${prop.name}"
-        val getterJvm = "_kneGet${prop.name.replaceFirstChar { it.uppercaseChar() }}"
+        val getterFn = "native_${cls.simpleName}_get_${prop.name}"
+        val getterJvm = "_nativeGet${prop.name.replaceFirstChar { it.uppercaseChar() }}"
         val getterBody = CodeBlock.builder()
         appendTryStart(getterBody)
         getterBody.add("val obj = %L\n", stableRefGet("handle", cls.fqName))
@@ -1549,8 +1549,8 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         )
 
         if (prop.mutable) {
-            val setterFn = "kne_${cls.simpleName}_set_${prop.name}"
-            val setterJvm = "_kneSet${prop.name.replaceFirstChar { it.uppercaseChar() }}"
+            val setterFn = "native_${cls.simpleName}_set_${prop.name}"
+            val setterJvm = "_nativeSet${prop.name.replaceFirstChar { it.uppercaseChar() }}"
             val setterBody = CodeBlock.builder()
             appendTryStart(setterBody, envReconstructParams(listOf(KneParam("value", prop.type))))
             setterBody.add("val obj = %L\n", stableRefGet("handle", cls.fqName))
@@ -1580,8 +1580,8 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
     private fun appendCompanionMethod(file: FileSpec.Builder, fn: KneFunction, cls: KneClass) {
         val className = jvmClassPath(cls.simpleName)
-        val fnName = "kne_${cls.simpleName}_companion_${fn.name}"
-        val jvmName = "_kneCompanion${fn.name.replaceFirstChar { it.uppercaseChar() }}"
+        val fnName = "native_${cls.simpleName}_companion_${fn.name}"
+        val jvmName = "_nativeCompanion${fn.name.replaceFirstChar { it.uppercaseChar() }}"
 
         val body = CodeBlock.builder()
         appendTryStart(body, envReconstructParams(fn.params))
@@ -1603,8 +1603,8 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     private fun appendCompanionProperty(file: FileSpec.Builder, prop: KneProperty, cls: KneClass) {
         val className = jvmClassPath(cls.simpleName)
 
-        val getterFn = "kne_${cls.simpleName}_companion_get_${prop.name}"
-        val getterJvm = "_kneCompanionGet${prop.name.replaceFirstChar { it.uppercaseChar() }}"
+        val getterFn = "native_${cls.simpleName}_companion_get_${prop.name}"
+        val getterJvm = "_nativeCompanionGet${prop.name.replaceFirstChar { it.uppercaseChar() }}"
         val getterBody = CodeBlock.builder()
         appendTryStart(getterBody)
         emitReturn(getterBody, CodeBlock.of("%T.%L", kotlinType(cls.fqName), prop.name), prop.type)
@@ -1621,8 +1621,8 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         )
 
         if (prop.mutable) {
-            val setterFn = "kne_${cls.simpleName}_companion_set_${prop.name}"
-            val setterJvm = "_kneCompanionSet${prop.name.replaceFirstChar { it.uppercaseChar() }}"
+            val setterFn = "native_${cls.simpleName}_companion_set_${prop.name}"
+            val setterJvm = "_nativeCompanionSet${prop.name.replaceFirstChar { it.uppercaseChar() }}"
             val setterBody = CodeBlock.builder()
             appendTryStart(setterBody, envReconstructParams(listOf(KneParam("value", prop.type))))
             setterBody.add("%T.%L = %L\n", kotlinType(cls.fqName), prop.name, callArgExpr("value", prop.type))
@@ -1656,8 +1656,8 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     // ── top-level functions ──────────────────────────────────────────────────
 
     private fun appendTopLevelFunction(file: FileSpec.Builder, fn: KneFunction, module: KneModule) {
-        val fnName = "kne_${fn.name}"
-        val jvmName = "_kne${fn.name.replaceFirstChar { it.uppercaseChar() }}"
+        val fnName = "native_${fn.name}"
+        val jvmName = "_native${fn.name.replaceFirstChar { it.uppercaseChar() }}"
         val hostClass = jvmClassPath(module.libName.replaceFirstChar { it.uppercaseChar() })
 
         val body = CodeBlock.builder()
@@ -1695,14 +1695,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             is KneType.INTERFACE -> receiverType.fqName
             else -> return
         }
-        val fnName = "kne_${receiverSimpleName}_ext_${fn.name}"
-        val jvmName = "_kneExt${fn.name.replaceFirstChar { it.uppercaseChar() }}"
+        val fnName = "native_${receiverSimpleName}_ext_${fn.name}"
+        val jvmName = "_nativeExt${fn.name.replaceFirstChar { it.uppercaseChar() }}"
         val hostClass = jvmClassPath("KneExt")
 
         val body = CodeBlock.builder()
         appendTryStart(body, envReconstructParams(fn.params))
         // JNI hands the Java args over in declaration order: the JVM side declares
-        // `_kneExtX(receiverHandle: Long, ...params)`, so the receiver comes FIRST here too.
+        // `_nativeExtX(receiverHandle: Long, ...params)`, so the receiver comes FIRST here too.
         body.add("val receiver = %L\n", stableRefGet("receiverHandle", receiverFq))
         // Extensions resolve through an explicit %M import (the old file relied on
         // `import <pkg>.*` star imports, which KotlinPoet cannot emit).
@@ -1745,7 +1745,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
     /**
      * `List<DataClass>` params already cross as a JVM object array that the native side reads
-     * element-by-element (`_kneReadJvm<DC>`), so no per-element builder natives are needed. Only the
+     * element-by-element (`_nativeReadJvm<DC>`), so no per-element builder natives are needed. Only the
      * data class refs have to exist on the native side, which the DC constructors already cover.
      */
     private fun collectDcListParamTypes(module: KneModule): Set<KneType.DATA_CLASS> {
@@ -1772,26 +1772,26 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
     private fun appendSuspendMethod(file: FileSpec.Builder, fn: KneFunction, cls: KneClass) {
         val className = jvmClassPath(cls.simpleName)
-        val fnName = "kne_${cls.simpleName}_${fn.name}Async"
-        val jvmName = "_kne${fn.name.replaceFirstChar { it.uppercaseChar() }}Async"
+        val fnName = "native_${cls.simpleName}_${fn.name}Async"
+        val jvmName = "_native${fn.name.replaceFirstChar { it.uppercaseChar() }}Async"
 
         val body = CodeBlock.builder()
         appendTryStart(body, envReconstructParams(fn.params))
         body.add("val obj = %L\n", stableRefGet("handle", cls.fqName))
-        body.add("val _completion = _kneGlobal(env, completion)\n")
+        body.add("val _completion = _nativeGlobal(env, completion)\n")
         body.add("val _job = %T()\n", JOB)
         body.add(
             "%T(_job + %M.Default). %M(start = %T.ATOMIC) {\n" +
                 "    try {\n" +
                 "        val _result = obj.%L(%L)\n" +
-                "        _kneAttached { _e -> %L }\n" +
+                "        _nativeAttached { _e -> %L }\n" +
                 "    } catch (e: %T) {\n" +
-                "        _kneAttached { _e -> _kneSuspendCancelled(_e, _completion!!) }\n" +
+                "        _nativeAttached { _e -> _nativeSuspendCancelled(_e, _completion!!) }\n" +
                 "    } catch (e: Throwable) {\n" +
                 "        val _msg = e.message ?: e::class.simpleName ?: %S\n" +
-                "        _kneAttached { _e -> _kneSuspendError(_e, _completion!!, _msg) }\n" +
+                "        _nativeAttached { _e -> _nativeSuspendError(_e, _completion!!, _msg) }\n" +
                 "    } finally {\n" +
-                "        _kneAttached { _e -> _kneFns(_e).DeleteGlobalRef!!.%M(_e, _completion) }\n" +
+                "        _nativeAttached { _e -> _nativeFns(_e).DeleteGlobalRef!!.%M(_e, _completion) }\n" +
                 "    }\n" +
                 "}\n",
             COROUTINE_SCOPE, M_DISPATCHERS, M_LAUNCH, COROUTINE_START,
@@ -1824,21 +1824,21 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     /** The (single-line) call delivering a suspend success payload of [type] to the completion object. */
     private fun suspendOkCall(type: KneType, valueExpr: CodeBlock): CodeBlock {
         val id = payloadId(type)
-        if (type == KneType.UNIT) return CodeBlock.of("_kneSuspendOk_Void(_e, _completion!!)")
+        if (type == KneType.UNIT) return CodeBlock.of("_nativeSuspendOk_Void(_e, _completion!!)")
         val args = suspendPayloadArg(type, valueExpr)
-        return CodeBlock.of("_kneSuspendOk_%L(_e, _completion!!, %L)", id, args)
+        return CodeBlock.of("_nativeSuspendOk_%L(_e, _completion!!, %L)", id, args)
     }
 
     /**
      * JNI payload arg expressions for a suspend/flow success value.
      *
      * [envExpr] must be the JNIEnv valid at the point of use: suspend/flow completion runs on a
-     * coroutine worker thread, so it is the `_e` handed in by `_kneAttached`, never the caller's
+     * coroutine worker thread, so it is the `_e` handed in by `_nativeAttached`, never the caller's
      * `env` (using the latter silently builds arrays on the wrong thread → garbage/null payloads).
      */
     private fun suspendPayloadArg(type: KneType, valueExpr: CodeBlock, envExpr: String = "_e"): CodeBlock = when {
         type is KneType.NULLABLE -> when (type.inner) {
-            KneType.STRING -> CodeBlock.of("%L?.let { _kneKToJ(%L, it) }", valueExpr, envExpr)
+            KneType.STRING -> CodeBlock.of("%L?.let { _nativeKToJ(%L, it) }", valueExpr, envExpr)
             KneType.BOOLEAN -> CodeBlock.of("if (%L != null) (if (%L) 1 else 0) else -1", valueExpr, valueExpr)
             KneType.INT -> CodeBlock.of("%L?.toLong() ?: Long.MIN_VALUE", valueExpr)
             KneType.LONG -> CodeBlock.of("%L ?: Long.MIN_VALUE", valueExpr)
@@ -1847,13 +1847,13 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             KneType.FLOAT -> CodeBlock.of("%L?.toRawBits()?.toLong() ?: Long.MIN_VALUE", valueExpr)
             KneType.DOUBLE -> CodeBlock.of("%L?.toRawBits() ?: Long.MIN_VALUE", valueExpr)
             is KneType.ENUM -> CodeBlock.of("%L?.ordinal ?: -1", valueExpr)
-            KneType.BYTE_ARRAY -> CodeBlock.of("%L?.let { _kneNewJBytes(%L, it) }", valueExpr, envExpr)
+            KneType.BYTE_ARRAY -> CodeBlock.of("%L?.let { _nativeNewJBytes(%L, it) }", valueExpr, envExpr)
             is KneType.LIST -> CodeBlock.of("%L?.let { %L }", valueExpr, elemArrayBuildExpr(CodeBlock.of("it"), type.inner.elementType, envExpr))
             is KneType.SET -> CodeBlock.of("%L?.let { %L }", valueExpr, elemArrayBuildExpr(CodeBlock.of("it.toList()"), type.inner.elementType, envExpr))
             is KneType.MAP -> CodeBlock.of("%L?.let { %L }", valueExpr, mapBuildExpr(CodeBlock.of("it"), type.inner, envExpr))
             is KneType.OBJECT, is KneType.INTERFACE ->
                 CodeBlock.of("%L?.let { %L } ?: 0L", valueExpr, stableRefCreate(valueExpr))
-            is KneType.DATA_CLASS -> CodeBlock.of("%L?.let { _kneNewJvm%L(%L, it) }", valueExpr, type.inner.simpleName, envExpr)
+            is KneType.DATA_CLASS -> CodeBlock.of("%L?.let { _nativeNewJvm%L(%L, it) }", valueExpr, type.inner.simpleName, envExpr)
             else -> payloadArgExpr(type.inner, valueExpr, envExpr)
         }
         else -> payloadArgExpr(type, valueExpr, envExpr)
@@ -1867,11 +1867,11 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         KneType.BOOLEAN -> CodeBlock.of("if (%L) 1u else 0u", valueExpr)
         KneType.BYTE -> valueExpr
         KneType.SHORT -> valueExpr
-        KneType.STRING -> CodeBlock.of("_kneKToJ(%L, %L)", envExpr, valueExpr)
-        KneType.BYTE_ARRAY -> CodeBlock.of("_kneNewJBytes(%L, %L)", envExpr, valueExpr)
+        KneType.STRING -> CodeBlock.of("_nativeKToJ(%L, %L)", envExpr, valueExpr)
+        KneType.BYTE_ARRAY -> CodeBlock.of("_nativeNewJBytes(%L, %L)", envExpr, valueExpr)
         is KneType.ENUM -> CodeBlock.of("%L.ordinal", valueExpr)
         is KneType.OBJECT, is KneType.INTERFACE -> stableRefCreate(valueExpr)
-        is KneType.DATA_CLASS -> CodeBlock.of("_kneNewJvm%L(%L, %L)", type.simpleName, envExpr, valueExpr)
+        is KneType.DATA_CLASS -> CodeBlock.of("_nativeNewJvm%L(%L, %L)", type.simpleName, envExpr, valueExpr)
         is KneType.LIST -> elemArrayBuildExpr(valueExpr, type.elementType, envExpr)
         is KneType.SET -> elemArrayBuildExpr(CodeBlock.of("%L.toList()", valueExpr), type.elementType, envExpr)
         is KneType.MAP -> mapBuildExpr(valueExpr, type, envExpr)
@@ -1970,32 +1970,32 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         }
     }
 
-    /** Generates `_kneSuspendOk_<id>` delivering a completed value to `completion.onSuccess`. */
+    /** Generates `_nativeSuspendOk_<id>` delivering a completed value to `completion.onSuccess`. */
     private fun buildSuspendOkHelper(type: KneType): FunSpec {
         val id = payloadId(type)
         if (type == KneType.UNIT) {
-            return FunSpec.builder("_kneSuspendOk_Void")
+            return FunSpec.builder("_nativeSuspendOk_Void")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("completion", flavor.jobject.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "val mid = _kneCompletionMid(env, completion, %S, %S) ?: return\n" +
-                            "_kneFns(env).CallVoidMethodA!!.invoke(env, completion, mid, null)\n",
+                        "val mid = _nativeCompletionMid(env, completion, %S, %S) ?: return\n" +
+                            "_nativeFns(env).CallVoidMethodA!!.invoke(env, completion, mid, null)\n",
                         "onSuccess", "()V",
                     ),
                 )
                 .build()
         }
-        return FunSpec.builder("_kneSuspendOk_$id")
+        return FunSpec.builder("_nativeSuspendOk_$id")
             .addModifiers(KModifier.INTERNAL)
             .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
             .addParameter("completion", flavor.jobject.copy(nullable = true))
             .addParameter("value", payloadNativeParam(type))
             .addCode(
                 CodeBlock.of(
-                    "val fns = _kneFns(env)\n" +
-                        "val mid = _kneCompletionMid(env, completion, %S, %S) ?: return\n" +
+                    "val fns = _nativeFns(env)\n" +
+                        "val mid = _nativeCompletionMid(env, completion, %S, %S) ?: return\n" +
                         "%M {\n" +
                         "    val args = allocArray<%T>(1)\n" +
                         "    args[0].%L = %L\n" +
@@ -2008,34 +2008,34 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             .build()
     }
 
-    /** Generates `_kneFlowNext_<id>` delivering a flow element to `callback.onNext`. */
+    /** Generates `_nativeFlowNext_<id>` delivering a flow element to `callback.onNext`. */
     private fun buildFlowNextHelper(type: KneType): FunSpec {
         val id = payloadId(type)
         if (type == KneType.UNIT) {
             // Flow<Unit>: native calls the dispatcher's `onNext()` with no argument, matching the
             // parameterless `onNext()` generated on the JVM side.
-            return FunSpec.builder("_kneFlowNext_$id")
+            return FunSpec.builder("_nativeFlowNext_$id")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("callback", flavor.jobject.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "val mid = _kneCompletionMid(env, callback, %S, %S) ?: return\n" +
-                            "_kneFns(env).CallVoidMethodA!!.invoke(env, callback, mid, null)\n",
+                        "val mid = _nativeCompletionMid(env, callback, %S, %S) ?: return\n" +
+                            "_nativeFns(env).CallVoidMethodA!!.invoke(env, callback, mid, null)\n",
                         "onNext", "()V",
                     ),
                 )
                 .build()
         }
-        return FunSpec.builder("_kneFlowNext_$id")
+        return FunSpec.builder("_nativeFlowNext_$id")
             .addModifiers(KModifier.INTERNAL)
             .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
             .addParameter("callback", flavor.jobject.copy(nullable = true))
             .addParameter("value", payloadNativeParam(type))
             .addCode(
                 CodeBlock.of(
-                    "val fns = _kneFns(env)\n" +
-                        "val mid = _kneCompletionMid(env, callback, %S, %S) ?: return\n" +
+                    "val fns = _nativeFns(env)\n" +
+                        "val mid = _nativeCompletionMid(env, callback, %S, %S) ?: return\n" +
                         "%M {\n" +
                         "    val args = allocArray<%T>(1)\n" +
                         "    args[0].%L = %L\n" +
@@ -2110,52 +2110,52 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         )
         val errorBodyFor = { target: String ->
             CodeBlock.of(
-                "val mid = _kneCompletionMid(env, %L, %S, %S) ?: return\n" +
+                "val mid = _nativeCompletionMid(env, %L, %S, %S) ?: return\n" +
                     "%M {\n" +
                     "    val args = allocArray<%T>(1)\n" +
-                    "    args[0].l = _kneKToJ(env, message)\n" +
-                    "    _kneFns(env).CallVoidMethodA!!.invoke(env, %L, mid, args)\n" +
+                    "    args[0].l = _nativeKToJ(env, message)\n" +
+                    "    _nativeFns(env).CallVoidMethodA!!.invoke(env, %L, mid, args)\n" +
                     "}\n",
                 target, "onError", "(Ljava/lang/String;)V", M_MEM_SCOPED, flavor.jvalue, target,
             )
         }
         val signalBodyFor = { target: String, method: String ->
             CodeBlock.of(
-                "val mid = _kneCompletionMid(env, %L, %S, %S) ?: return\n" +
-                    "_kneFns(env).CallVoidMethodA!!.invoke(env, %L, mid, null)\n",
+                "val mid = _nativeCompletionMid(env, %L, %S, %S) ?: return\n" +
+                    "_nativeFns(env).CallVoidMethodA!!.invoke(env, %L, mid, null)\n",
                 target, method, "()V", target,
             )
         }
         file.addFunction(
-            FunSpec.builder("_kneSuspendError")
+            FunSpec.builder("_nativeSuspendError")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameters(messageParams)
                 .addCode(errorBodyFor("completion"))
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneSuspendCancelled")
+            FunSpec.builder("_nativeSuspendCancelled")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameters(completionParams)
                 .addCode(signalBodyFor("completion", "onCancelled"))
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneFlowError")
+            FunSpec.builder("_nativeFlowError")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameters(flowMessageParams)
                 .addCode(errorBodyFor("callback"))
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneFlowComplete")
+            FunSpec.builder("_nativeFlowComplete")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameters(callbackParams)
                 .addCode(signalBodyFor("callback", "onComplete"))
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneFlowCancelled")
+            FunSpec.builder("_nativeFlowCancelled")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameters(callbackParams)
                 .addCode(signalBodyFor("callback", "onCancelled"))
@@ -2165,14 +2165,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
     private fun appendFlowMethod(file: FileSpec.Builder, fn: KneFunction, cls: KneClass) {
         val className = jvmClassPath(cls.simpleName)
-        val fnName = "kne_${cls.simpleName}_${fn.name}Flow"
-        val jvmName = "_kne${fn.name.replaceFirstChar { it.uppercaseChar() }}Flow"
+        val fnName = "native_${cls.simpleName}_${fn.name}Flow"
+        val jvmName = "_native${fn.name.replaceFirstChar { it.uppercaseChar() }}Flow"
         val elemType = (fn.returnType as KneType.FLOW).elementType
 
         val body = CodeBlock.builder()
         appendTryStart(body, envReconstructParams(fn.params))
         body.add("val obj = %L\n", stableRefGet("handle", cls.fqName))
-        body.add("val _callback = _kneGlobal(env, callback)\n")
+        body.add("val _callback = _nativeGlobal(env, callback)\n")
         body.add("val _job = %T()\n", JOB)
         body.add("val _credits = %T<%T>(%T.UNLIMITED)\n", CHANNEL, PT.UNIT, CHANNEL)
         body.add("repeat(%L) { _credits.trySend(Unit) }\n", FLOW_INITIAL_CREDITS)
@@ -2182,16 +2182,16 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 "        val _flow = obj.%L(%L)\n" +
                 "        _flow.collect { _value ->\n" +
                 "            _credits.receive()\n" +
-                "            _kneAttached { _e -> %L }\n" +
+                "            _nativeAttached { _e -> %L }\n" +
                 "        }\n" +
-                "        _kneAttached { _e -> _kneFlowComplete(_e, _callback!!) }\n" +
+                "        _nativeAttached { _e -> _nativeFlowComplete(_e, _callback!!) }\n" +
                 "    } catch (e: %T) {\n" +
-                "        _kneAttached { _e -> _kneFlowCancelled(_e, _callback!!) }\n" +
+                "        _nativeAttached { _e -> _nativeFlowCancelled(_e, _callback!!) }\n" +
                 "    } catch (e: Throwable) {\n" +
                 "        val _msg = e.message ?: e::class.simpleName ?: %S\n" +
-                "        _kneAttached { _e -> _kneFlowError(_e, _callback!!, _msg) }\n" +
+                "        _nativeAttached { _e -> _nativeFlowError(_e, _callback!!, _msg) }\n" +
                 "    } finally {\n" +
-                "        _kneAttached { _e -> _kneFns(_e).DeleteGlobalRef!!.%M(_e, _callback) }\n" +
+                "        _nativeAttached { _e -> _nativeFns(_e).DeleteGlobalRef!!.%M(_e, _callback) }\n" +
                 "    }\n" +
                 "}\n",
             COROUTINE_SCOPE, M_DISPATCHERS, M_LAUNCH, COROUTINE_START,
@@ -2223,9 +2223,9 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
     private fun flowNextCall(elemType: KneType, valueExpr: CodeBlock): CodeBlock =
         // Flow<Unit>: the payload-less helper / dispatcher overload (see buildFlowNextHelper).
-        if (elemType == KneType.UNIT) CodeBlock.of("_kneFlowNext_%L(_e, _callback!!)", payloadId(elemType))
+        if (elemType == KneType.UNIT) CodeBlock.of("_nativeFlowNext_%L(_e, _callback!!)", payloadId(elemType))
         else CodeBlock.of(
-            "_kneFlowNext_%L(_e, _callback!!, %L)", payloadId(elemType), suspendPayloadArg(elemType, valueExpr),
+            "_nativeFlowNext_%L(_e, _callback!!, %L)", payloadId(elemType), suspendPayloadArg(elemType, valueExpr),
         )
 
     // ── suspend/flow type collection ─────────────────────────────────────────
@@ -2298,14 +2298,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     }
 
     /**
-     * Generates `kne_invokeFn_<id>` registered on `KneNativeBindings` as `_kneInvokeFn<id>`:
+     * Generates `native_invokeFn_<id>` registered on `KneNativeBindings` as `_nativeInvokeFn<id>`:
      * lets the JVM call back into a native lambda that a method returned as an opaque handle.
      */
     private fun buildFnInvokeBridge(fnType: KneType.FUNCTION): FunSpec {
         val id = JniTypes.functionId(fnType)
         val hostClass = jvmClassPath("KneNativeBindings")
         val params = fnType.paramTypes.mapIndexed { i, t -> KneParam("p$i", t) }
-        val fnName = "kne_invokeFn_$id"
+        val fnName = "native_invokeFn_$id"
 
         val body = CodeBlock.builder()
         appendTryStart(body, envReconstructParams(params))
@@ -2314,7 +2314,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         appendTryEnd(body, errorReturnExpr(fnType.returnType))
 
         val symbol = registerMethod(
-            hostClass, "_kneInvokeFn$id",
+            hostClass, "_nativeInvokeFn$id",
             "(J" + paramDescriptor(params).drop(1).dropLast(1) + ")" +
                 JniTypes.returnDescriptor(fnType.returnType, jvmPackage),
             fnName,
@@ -2330,7 +2330,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     }
 
     /**
-     * Generates `_kneInvoke_<id>`: calls the JVM dispatcher's `invoke` method with
+     * Generates `_nativeInvoke_<id>`: calls the JVM dispatcher's `invoke` method with
      * native payload values. A JVM exception thrown by the callback is left pending;
      * the caller unwinds via the sentinel and it propagates on native return.
      */
@@ -2349,10 +2349,10 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
         val body = CodeBlock.builder()
         body.add("if (fn == null) return %L\n", callbackNativeErrorReturn(fnType.returnType))
-        body.add("val fns = _kneFns(env)\n")
+        body.add("val fns = _nativeFns(env)\n")
         body.add("val clazz = fns.GetObjectClass!!.invoke(env, fn)\n")
         body.add(
-            "val mid = _kneMethodId(env, clazz, %S, %S) ?: return %L\n",
+            "val mid = _nativeMethodId(env, clazz, %S, %S) ?: return %L\n",
             "invoke", invokeSig, callbackNativeErrorReturn(fnType.returnType),
         )
         body.add("%M {\n", M_MEM_SCOPED)
@@ -2367,13 +2367,13 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         // protocol instead — the outer bridge catch lets the original exception propagate.
         fun callAndGuard(callExpr: CodeBlock, retExpr: CodeBlock) {
             body.add("val _r = %L\n", callExpr)
-            body.add("if (_knePending(env)) throw KneJniCallbackPendingException()\n")
+            body.add("if (_nativePending(env)) throw KneJniCallbackPendingException()\n")
             body.add("return %L\n", retExpr)
         }
         when (callKind) {
             "VOID" -> {
                 body.add("fns.CallVoidMethodA!!.invoke(env, fn, mid, args)\n")
-                body.add("if (_knePending(env)) throw KneJniCallbackPendingException()\n")
+                body.add("if (_nativePending(env)) throw KneJniCallbackPendingException()\n")
             }
             "INT" -> callAndGuard(CodeBlock.of("fns.CallIntMethodA!!.invoke(env, fn, mid, args)"), CodeBlock.of("_r"))
             "LONG" -> callAndGuard(CodeBlock.of("fns.CallLongMethodA!!.invoke(env, fn, mid, args)"), CodeBlock.of("_r"))
@@ -2382,20 +2382,20 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             "UBYTE" -> callAndGuard(CodeBlock.of("fns.CallBooleanMethodA!!.invoke(env, fn, mid, args)"), CodeBlock.of("_r"))
             "BYTE" -> callAndGuard(CodeBlock.of("fns.CallByteMethodA!!.invoke(env, fn, mid, args)"), CodeBlock.of("_r"))
             "SHORT" -> callAndGuard(CodeBlock.of("fns.CallShortMethodA!!.invoke(env, fn, mid, args)"), CodeBlock.of("_r"))
-            "STRING" -> callAndGuard(CodeBlock.of("fns.CallObjectMethodA!!.invoke(env, fn, mid, args)"), CodeBlock.of("_kneJToK(env, _r)"))
-            "BYTES" -> callAndGuard(CodeBlock.of("fns.CallObjectMethodA!!.invoke(env, fn, mid, args)"), CodeBlock.of("_kneReadJBytes(env, _r)"))
-            "HANDLE_OBJ" -> callAndGuard(CodeBlock.of("fns.CallObjectMethodA!!.invoke(env, fn, mid, args)"), CodeBlock.of("_kneReadJvmHandle(env, _r)"))
+            "STRING" -> callAndGuard(CodeBlock.of("fns.CallObjectMethodA!!.invoke(env, fn, mid, args)"), CodeBlock.of("_nativeJToK(env, _r)"))
+            "BYTES" -> callAndGuard(CodeBlock.of("fns.CallObjectMethodA!!.invoke(env, fn, mid, args)"), CodeBlock.of("_nativeReadJBytes(env, _r)"))
+            "HANDLE_OBJ" -> callAndGuard(CodeBlock.of("fns.CallObjectMethodA!!.invoke(env, fn, mid, args)"), CodeBlock.of("_nativeReadJvmHandle(env, _r)"))
             "DC_RET" -> callAndGuard(
                 CodeBlock.of("fns.CallObjectMethodA!!.invoke(env, fn, mid, args)"),
-                CodeBlock.of("_kneReadJvm%L(env, _r)", (fnType.returnType as? KneType.DATA_CLASS)?.simpleName ?: "Todo"),
+                CodeBlock.of("_nativeReadJvm%L(env, _r)", (fnType.returnType as? KneType.DATA_CLASS)?.simpleName ?: "Todo"),
             )
             "COLL" -> {
                 body.add("val _arr = fns.CallObjectMethodA!!.invoke(env, fn, mid, args)\n")
-                body.add("if (_knePending(env)) throw KneJniCallbackPendingException()\n")
+                body.add("if (_nativePending(env)) throw KneJniCallbackPendingException()\n")
             }
             "MAP_PAIR" -> {
                 body.add("val _pair = fns.CallObjectMethodA!!.invoke(env, fn, mid, args)\n")
-                body.add("if (_knePending(env)) throw KneJniCallbackPendingException()\n")
+                body.add("if (_nativePending(env)) throw KneJniCallbackPendingException()\n")
             }
             else -> callAndGuard(CodeBlock.of("fns.CallObjectMethodA!!.invoke(env, fn, mid, args)"), CodeBlock.of("_r"))
         }
@@ -2403,14 +2403,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             body.add("return %L\n", callbackCollUnwrap(fnType.returnType))
         }
         if (callKind == "MAP_PAIR") {
-            body.add("val _keys = _kneObjArrGet(env, _pair, 0)\n")
-            body.add("val _vals = _kneObjArrGet(env, _pair, 1)\n")
+            body.add("val _keys = _nativeObjArrGet(env, _pair, 0)\n")
+            body.add("val _vals = _nativeObjArrGet(env, _pair, 1)\n")
             body.add("return %L\n", callbackMapUnwrap(fnType.returnType as KneType.MAP))
         }
         body.unindent()
         body.add("}\n")
 
-        val spec = FunSpec.builder("_kneInvoke_$id")
+        val spec = FunSpec.builder("_nativeInvoke_$id")
             .addModifiers(KModifier.INTERNAL)
             .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
             .addParameter("fn", flavor.jobject.copy(nullable = true))
@@ -2482,19 +2482,19 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     private fun callbackCollUnwrap(t: KneType): CodeBlock {
         val elem = if (t is KneType.LIST) t.elementType else (t as KneType.SET).elementType
         val list: CodeBlock = when (elem) {
-            KneType.INT -> CodeBlock.of("_kneReadJIntArray(env, _arr)?.toList() ?: emptyList()")
-            KneType.LONG -> CodeBlock.of("_kneReadJLongArray(env, _arr)?.toList() ?: emptyList()")
-            KneType.DOUBLE -> CodeBlock.of("_kneReadJDoubleArray(env, _arr)?.toList() ?: emptyList()")
-            KneType.FLOAT -> CodeBlock.of("_kneReadJFloatArray(env, _arr)?.toList() ?: emptyList()")
-            KneType.SHORT -> CodeBlock.of("_kneReadJShortArray(env, _arr)?.toList() ?: emptyList()")
-            KneType.BYTE -> CodeBlock.of("_kneReadJBytes(env, _arr)?.toList() ?: emptyList()")
-            KneType.BOOLEAN -> CodeBlock.of("_kneReadJBooleanArray(env, _arr)?.toList() ?: emptyList()")
-            is KneType.ENUM -> CodeBlock.of("_kneReadJIntArray(env, _arr)?.toList()?.map { %T.entries[it] } ?: emptyList()", kotlinType(elem.fqName))
-            KneType.STRING -> CodeBlock.of("_kneReadJStrList(env, _arr) ?: emptyList()")
-            is KneType.OBJECT -> CodeBlock.of("_kneReadJLongArray(env, _arr)?.map { %T.fromNativeHandle(it) } ?: emptyList()", kotlinType(elem.fqName))
-            is KneType.INTERFACE -> CodeBlock.of("_kneReadJLongArray(env, _arr)?.map { %T.fromNativeHandle(it) } ?: emptyList()", kotlinType(elem.fqName))
-            KneType.BYTE_ARRAY -> CodeBlock.of("_kneReadJBytesList(env, _arr) ?: emptyList()")
-            is KneType.DATA_CLASS -> CodeBlock.of("_kneReadJLongArray(env, _arr)") // DC lists arrive via listparam bridges
+            KneType.INT -> CodeBlock.of("_nativeReadJIntArray(env, _arr)?.toList() ?: emptyList()")
+            KneType.LONG -> CodeBlock.of("_nativeReadJLongArray(env, _arr)?.toList() ?: emptyList()")
+            KneType.DOUBLE -> CodeBlock.of("_nativeReadJDoubleArray(env, _arr)?.toList() ?: emptyList()")
+            KneType.FLOAT -> CodeBlock.of("_nativeReadJFloatArray(env, _arr)?.toList() ?: emptyList()")
+            KneType.SHORT -> CodeBlock.of("_nativeReadJShortArray(env, _arr)?.toList() ?: emptyList()")
+            KneType.BYTE -> CodeBlock.of("_nativeReadJBytes(env, _arr)?.toList() ?: emptyList()")
+            KneType.BOOLEAN -> CodeBlock.of("_nativeReadJBooleanArray(env, _arr)?.toList() ?: emptyList()")
+            is KneType.ENUM -> CodeBlock.of("_nativeReadJIntArray(env, _arr)?.toList()?.map { %T.entries[it] } ?: emptyList()", kotlinType(elem.fqName))
+            KneType.STRING -> CodeBlock.of("_nativeReadJStrList(env, _arr) ?: emptyList()")
+            is KneType.OBJECT -> CodeBlock.of("_nativeReadJLongArray(env, _arr)?.map { %T.fromNativeHandle(it) } ?: emptyList()", kotlinType(elem.fqName))
+            is KneType.INTERFACE -> CodeBlock.of("_nativeReadJLongArray(env, _arr)?.map { %T.fromNativeHandle(it) } ?: emptyList()", kotlinType(elem.fqName))
+            KneType.BYTE_ARRAY -> CodeBlock.of("_nativeReadJBytesList(env, _arr) ?: emptyList()")
+            is KneType.DATA_CLASS -> CodeBlock.of("_nativeReadJLongArray(env, _arr)") // DC lists arrive via listparam bridges
             else -> CodeBlock.of("_arr?.toList() ?: emptyList()")
         }
         return if (t is KneType.SET) CodeBlock.of("(%L ?: emptyList()).toSet()", list) else CodeBlock.of("%L ?: emptyList()", list)
@@ -2508,16 +2508,16 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     }
 
     private fun keyValList(t: KneType, arrName: String): CodeBlock = when (t) {
-        KneType.INT -> CodeBlock.of("_kneReadJIntArray(env, %L)?.toList() ?: emptyList()", arrName)
-        KneType.LONG -> CodeBlock.of("_kneReadJLongArray(env, %L)?.toList() ?: emptyList()", arrName)
-        KneType.DOUBLE -> CodeBlock.of("_kneReadJDoubleArray(env, %L)?.toList() ?: emptyList()", arrName)
-        KneType.FLOAT -> CodeBlock.of("_kneReadJFloatArray(env, %L)?.toList() ?: emptyList()", arrName)
-        KneType.SHORT -> CodeBlock.of("_kneReadJShortArray(env, %L)?.toList() ?: emptyList()", arrName)
-        KneType.BYTE -> CodeBlock.of("_kneReadJBytes(env, %L)?.toList() ?: emptyList()", arrName)
-        KneType.BOOLEAN -> CodeBlock.of("_kneReadJBooleanArray(env, %L)?.toList() ?: emptyList()", arrName)
-        is KneType.ENUM -> CodeBlock.of("_kneReadJIntArray(env, %L)?.toList()?.map { %T.entries[it] } ?: emptyList()", arrName, kotlinType(t.fqName))
-        KneType.STRING -> CodeBlock.of("_kneReadJStrList(env, %L) ?: emptyList()", arrName)
-        is KneType.OBJECT, is KneType.INTERFACE -> CodeBlock.of("_kneReadJLongArray(env, %L)?.toList() ?: emptyList()", arrName)
+        KneType.INT -> CodeBlock.of("_nativeReadJIntArray(env, %L)?.toList() ?: emptyList()", arrName)
+        KneType.LONG -> CodeBlock.of("_nativeReadJLongArray(env, %L)?.toList() ?: emptyList()", arrName)
+        KneType.DOUBLE -> CodeBlock.of("_nativeReadJDoubleArray(env, %L)?.toList() ?: emptyList()", arrName)
+        KneType.FLOAT -> CodeBlock.of("_nativeReadJFloatArray(env, %L)?.toList() ?: emptyList()", arrName)
+        KneType.SHORT -> CodeBlock.of("_nativeReadJShortArray(env, %L)?.toList() ?: emptyList()", arrName)
+        KneType.BYTE -> CodeBlock.of("_nativeReadJBytes(env, %L)?.toList() ?: emptyList()", arrName)
+        KneType.BOOLEAN -> CodeBlock.of("_nativeReadJBooleanArray(env, %L)?.toList() ?: emptyList()", arrName)
+        is KneType.ENUM -> CodeBlock.of("_nativeReadJIntArray(env, %L)?.toList()?.map { %T.entries[it] } ?: emptyList()", arrName, kotlinType(t.fqName))
+        KneType.STRING -> CodeBlock.of("_nativeReadJStrList(env, %L) ?: emptyList()", arrName)
+        is KneType.OBJECT, is KneType.INTERFACE -> CodeBlock.of("_nativeReadJLongArray(env, %L)?.toList() ?: emptyList()", arrName)
         else -> CodeBlock.of("emptyList()")
     }
 
@@ -2599,27 +2599,27 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
     /** Converts an inner Kotlin List into a real JNI array object (nested list callbacks). */
     private fun nestedListJobject(elemType: KneType, paramName: CodeBlock, envExpr: String = "env"): CodeBlock = when (elemType) {
-        KneType.INT -> CodeBlock.of("_kneNewJIntArray(%L, %L.toIntArray())", envExpr, paramName)
-        KneType.LONG -> CodeBlock.of("_kneNewJLongArray(%L, %L.toLongArray())", envExpr, paramName)
-        KneType.DOUBLE -> CodeBlock.of("_kneNewJDoubleArray(%L, %L.toDoubleArray())", envExpr, paramName)
-        KneType.FLOAT -> CodeBlock.of("_kneNewJFloatArray(%L, %L.toFloatArray())", envExpr, paramName)
-        KneType.SHORT -> CodeBlock.of("_kneNewJShortArray(%L, %L.toShortArray())", envExpr, paramName)
-        KneType.BYTE -> CodeBlock.of("_kneNewJBytes(%L, %L.toByteArray())", envExpr, paramName)
-        KneType.BOOLEAN -> CodeBlock.of("_kneNewJBooleanArray(%L, %L.toBooleanArray())", envExpr, paramName)
-        is KneType.ENUM -> CodeBlock.of("_kneNewJIntArray(%L, IntArray(%L.size) { %L[it].ordinal })", envExpr, paramName, paramName)
-        KneType.STRING -> CodeBlock.of("_kneNewJStrArr(%L, %L)", envExpr, paramName)
+        KneType.INT -> CodeBlock.of("_nativeNewJIntArray(%L, %L.toIntArray())", envExpr, paramName)
+        KneType.LONG -> CodeBlock.of("_nativeNewJLongArray(%L, %L.toLongArray())", envExpr, paramName)
+        KneType.DOUBLE -> CodeBlock.of("_nativeNewJDoubleArray(%L, %L.toDoubleArray())", envExpr, paramName)
+        KneType.FLOAT -> CodeBlock.of("_nativeNewJFloatArray(%L, %L.toFloatArray())", envExpr, paramName)
+        KneType.SHORT -> CodeBlock.of("_nativeNewJShortArray(%L, %L.toShortArray())", envExpr, paramName)
+        KneType.BYTE -> CodeBlock.of("_nativeNewJBytes(%L, %L.toByteArray())", envExpr, paramName)
+        KneType.BOOLEAN -> CodeBlock.of("_nativeNewJBooleanArray(%L, %L.toBooleanArray())", envExpr, paramName)
+        is KneType.ENUM -> CodeBlock.of("_nativeNewJIntArray(%L, IntArray(%L.size) { %L[it].ordinal })", envExpr, paramName, paramName)
+        KneType.STRING -> CodeBlock.of("_nativeNewJStrArr(%L, %L)", envExpr, paramName)
         is KneType.OBJECT -> CodeBlock.of(
-            "_kneNewJLongArray(%L, LongArray(%L.size) { %L })",
+            "_nativeNewJLongArray(%L, LongArray(%L.size) { %L })",
             envExpr, paramName, stableRefCreate(CodeBlock.of("%L[it] as %T", paramName, kotlinType(elemType.fqName))),
         )
         is KneType.INTERFACE -> CodeBlock.of(
-            "_kneNewJLongArray(%L, LongArray(%L.size) { %L })",
+            "_nativeNewJLongArray(%L, LongArray(%L.size) { %L })",
             envExpr, paramName, stableRefCreate(CodeBlock.of("%L[it] as %T", paramName, kotlinType(elemType.fqName))),
         )
-        KneType.BYTE_ARRAY -> CodeBlock.of("_kneNewJBytesArr(%L, %L)", envExpr, paramName)
-        is KneType.DATA_CLASS -> CodeBlock.of("_kneNewJObjArr(%L, %L.map { _kneNewJvm%L(%L, it) })", envExpr, paramName, elemType.simpleName, envExpr)
-        is KneType.LIST -> CodeBlock.of("_kneNewJObjArr(%L, %L.map { %L })", envExpr, paramName, nestedListJobject(elemType.elementType, CodeBlock.of("it"), envExpr))
-        is KneType.SET -> CodeBlock.of("_kneNewJObjArr(%L, %L.map { %L })", envExpr, paramName, nestedListJobject(elemType.elementType, CodeBlock.of("it"), envExpr))
+        KneType.BYTE_ARRAY -> CodeBlock.of("_nativeNewJBytesArr(%L, %L)", envExpr, paramName)
+        is KneType.DATA_CLASS -> CodeBlock.of("_nativeNewJObjArr(%L, %L.map { _nativeNewJvm%L(%L, it) })", envExpr, paramName, elemType.simpleName, envExpr)
+        is KneType.LIST -> CodeBlock.of("_nativeNewJObjArr(%L, %L.map { %L })", envExpr, paramName, nestedListJobject(elemType.elementType, CodeBlock.of("it"), envExpr))
+        is KneType.SET -> CodeBlock.of("_nativeNewJObjArr(%L, %L.map { %L })", envExpr, paramName, nestedListJobject(elemType.elementType, CodeBlock.of("it"), envExpr))
         else -> CodeBlock.of("null")
     }
 
@@ -2631,11 +2631,11 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         KneType.BOOLEAN -> CodeBlock.of("if (%L) 1u else 0u", name)
         KneType.BYTE -> CodeBlock.of("%L", name)
         KneType.SHORT -> CodeBlock.of("%L", name)
-        KneType.STRING -> CodeBlock.of("_kneKToJ(env, %L)", name)
-        KneType.BYTE_ARRAY -> CodeBlock.of("_kneNewJBytes(env, %L)", name)
-        is KneType.OBJECT -> CodeBlock.of("_kneNewJvmProxy%L(env, %L)", t.simpleName, stableRefCreate(CodeBlock.of("%L", name)))
-        is KneType.INTERFACE -> CodeBlock.of("_kneNewJvmProxy%L(env, %L)", t.simpleName, stableRefCreate(CodeBlock.of("%L", name)))
-        is KneType.DATA_CLASS -> CodeBlock.of("_kneNewJvm%L(env, %L)", t.simpleName, name)
+        KneType.STRING -> CodeBlock.of("_nativeKToJ(env, %L)", name)
+        KneType.BYTE_ARRAY -> CodeBlock.of("_nativeNewJBytes(env, %L)", name)
+        is KneType.OBJECT -> CodeBlock.of("_nativeNewJvmProxy%L(env, %L)", t.simpleName, stableRefCreate(CodeBlock.of("%L", name)))
+        is KneType.INTERFACE -> CodeBlock.of("_nativeNewJvmProxy%L(env, %L)", t.simpleName, stableRefCreate(CodeBlock.of("%L", name)))
+        is KneType.DATA_CLASS -> CodeBlock.of("_nativeNewJvm%L(env, %L)", t.simpleName, name)
         is KneType.LIST -> elemArrayBuildExpr(CodeBlock.of("%L", name), t.elementType)
         is KneType.SET -> elemArrayBuildExpr(CodeBlock.of("%L.toList()", name), t.elementType)
         is KneType.MAP -> mapBuildExpr(CodeBlock.of("%L", name), t)
@@ -2751,7 +2751,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         collectJvmMaterialisedDcs(module).forEach { dc -> dc.fields.forEach { scanNested(it.type) } }
         for (nid in nestedIds) {
             file.addFunction(
-                FunSpec.builder("_kneNewJvmListOf$nid")
+                FunSpec.builder("_nativeNewJvmListOf$nid")
                     .addModifiers(KModifier.INTERNAL)
                     .addKdoc("Constructs a java.util.List of nested lists (element id $nid).\n")
                     .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
@@ -2759,8 +2759,8 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                     .returns(flavor.jobject.copy(nullable = true))
                     .addCode(
                         CodeBlock.of(
-                            "val out = _kneNewJvmArrayList(env, values.size) ?: return null\n" +
-                                "for (v in values) _kneJvmListAdd(env, out, v as? jobject)\n" +
+                            "val out = _nativeNewJvmArrayList(env, values.size) ?: return null\n" +
+                                "for (v in values) _nativeJvmListAdd(env, out, v as? jobject)\n" +
                                 "return out\n",
                         ),
                     )
@@ -2770,7 +2770,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         for (e in collectReferencedEnumsForDcFields(module)) {
             val (fq, simple) = e
             file.addFunction(
-                FunSpec.builder("_kneNewJvmListOfE$simple")
+                FunSpec.builder("_nativeNewJvmListOfE$simple")
                     .addModifiers(KModifier.INTERNAL)
                     .addKdoc("Constructs a java.util.List<$simple> from Kotlin values (element = values[ordinal]).\n")
                     .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
@@ -2778,8 +2778,8 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                     .returns(flavor.jobject.copy(nullable = true))
                     .addCode(
                         CodeBlock.of(
-                            "val out = _kneNewJvmArrayList(env, values.size) ?: return null\n" +
-                                "for (v in values) _kneJvmListAdd(env, out, _kneNewJvmEnum%L(env, v.ordinal))\n" +
+                            "val out = _nativeNewJvmArrayList(env, values.size) ?: return null\n" +
+                                "for (v in values) _nativeJvmListAdd(env, out, _nativeNewJvmEnum%L(env, v.ordinal))\n" +
                                 "return out\n",
                             simple,
                         ),
@@ -2789,7 +2789,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         }
         for (dc in collectJvmMaterialisedDcs(module)) {
             file.addFunction(
-                FunSpec.builder("_kneNewJvmListOfD${dc.simpleName}")
+                FunSpec.builder("_nativeNewJvmListOfD${dc.simpleName}")
                     .addModifiers(KModifier.INTERNAL)
                     .addKdoc("Constructs a java.util.List<${dc.simpleName}> from Kotlin values.\n")
                     .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
@@ -2797,8 +2797,8 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                     .returns(flavor.jobject.copy(nullable = true))
                     .addCode(
                         CodeBlock.of(
-                            "val out = _kneNewJvmArrayList(env, values.size) ?: return null\n" +
-                                "for (v in values) _kneJvmListAdd(env, out, _kneNewJvm%L(env, v))\n" +
+                            "val out = _nativeNewJvmArrayList(env, values.size) ?: return null\n" +
+                                "for (v in values) _nativeJvmListAdd(env, out, _nativeNewJvm%L(env, v))\n" +
                                 "return out\n",
                             dc.simpleName,
                         ),
@@ -2807,18 +2807,18 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             )
         }
         file.addFunction(
-            FunSpec.builder("_kneNewJvmListOfX")
+            FunSpec.builder("_nativeNewJvmListOfX")
                 .addModifiers(KModifier.INTERNAL)
                 .addKdoc("Generic fallback: empty list (unsupported element kind).\n")
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("values", PT.LIST.parameterizedBy(PT.ANY.copy(nullable = true)))
                 .returns(flavor.jobject.copy(nullable = true))
-                .addCode(CodeBlock.of("return _kneNewJvmArrayList(env, 0)\n"))
+                .addCode(CodeBlock.of("return _nativeNewJvmArrayList(env, 0)\n"))
                 .build(),
         )
         for (cls in collectReferencedProxyClasses(module)) {
             file.addFunction(
-                FunSpec.builder("_kneNewJvmListOfH${cls.simpleName}")
+                FunSpec.builder("_nativeNewJvmListOfH${cls.simpleName}")
                     .addModifiers(KModifier.INTERNAL)
                     .addKdoc("Constructs a java.util.List<${cls.simpleName}> from Kotlin values (element = proxy handle).\n")
                     .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
@@ -2826,8 +2826,8 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                     .returns(flavor.jobject.copy(nullable = true))
                     .addCode(
                         CodeBlock.of(
-                            "val out = _kneNewJvmArrayList(env, values.size) ?: return null\n" +
-                                "for (v in values) _kneJvmListAdd(env, out, _kneNewJvmProxy%L(env, %L))\n" +
+                            "val out = _nativeNewJvmArrayList(env, values.size) ?: return null\n" +
+                                "for (v in values) _nativeJvmListAdd(env, out, _nativeNewJvmProxy%L(env, %L))\n" +
                                 "return out\n",
                             cls.simpleName, stableRefCreate(CodeBlock.of("v")),
                         ),
@@ -2842,7 +2842,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         val n = dc.simpleName
 
         file.addType(
-            TypeSpec.objectBuilder("_kneDcJvm$n")
+            TypeSpec.objectBuilder("_nativeDcJvm$n")
                 .addModifiers(KModifier.INTERNAL)
                 .addAnnotation(THREAD_LOCAL)
                 .addProperty(
@@ -2861,11 +2861,11 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         }
 
         val body = CodeBlock.builder()
-        body.add("val fns = _kneFns(env)\n")
-        body.add("val clazz = _kneClass(%S) ?: return null\n", dc.fqName.replace('.', '/'))
-        body.add("var mid = _kneDcJvm%L.ctor\n", n)
+        body.add("val fns = _nativeFns(env)\n")
+        body.add("val clazz = _nativeClass(%S) ?: return null\n", dc.fqName.replace('.', '/'))
+        body.add("var mid = _nativeDcJvm%L.ctor\n", n)
         body.add(
-            "if (mid == null) { mid = %M { fns.GetMethodID!!.invoke(env, clazz, %S.%M.ptr, %S.%M.ptr) }; _kneDcJvm%L.ctor = mid }\n",
+            "if (mid == null) { mid = %M { fns.GetMethodID!!.invoke(env, clazz, %S.%M.ptr, %S.%M.ptr) }; _nativeDcJvm%L.ctor = mid }\n",
             M_MEM_SCOPED, "<init>", M_CSTR, ctorSig, M_CSTR, n,
         )
         body.add("%M {\n", M_MEM_SCOPED)
@@ -2879,7 +2879,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         body.add("}\n")
 
         file.addFunction(
-            FunSpec.builder("_kneNewJvm$n")
+            FunSpec.builder("_nativeNewJvm$n")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("value", kotlinType(dc.fqName))
@@ -2949,14 +2949,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         KneType.BOOLEAN -> CodeBlock.of("if (%L) 1u else 0u", expr)
         KneType.BYTE -> CodeBlock.of("%L", expr)
         KneType.SHORT -> CodeBlock.of("%L", expr)
-        KneType.STRING -> CodeBlock.of("_kneKToJ(env, %L)", expr)
-        KneType.BYTE_ARRAY -> CodeBlock.of("_kneNewJBytes(env, %L)", expr)
-        is KneType.ENUM -> CodeBlock.of("_kneNewJvmEnum%L(env, %L.ordinal)", type.simpleName, expr)
-        is KneType.OBJECT -> CodeBlock.of("_kneNewJvmProxy%L(env, %L)", type.simpleName, stableRefCreate(CodeBlock.of("%L", expr)))
-        is KneType.INTERFACE -> CodeBlock.of("_kneNewJvmProxy%L(env, %L)", type.simpleName, stableRefCreate(CodeBlock.of("%L", expr)))
-        is KneType.DATA_CLASS -> CodeBlock.of("_kneNewJvm%L(env, %L)", type.simpleName, expr)
-        is KneType.LIST -> CodeBlock.of("_kneNewJvmListOf%L(env, %L)", jvmListElemId(type.elementType), expr)
-        is KneType.SET -> CodeBlock.of("_kneNewJvmListOf%L(env, %L.toList())", jvmListElemId(type.elementType), expr)
+        KneType.STRING -> CodeBlock.of("_nativeKToJ(env, %L)", expr)
+        KneType.BYTE_ARRAY -> CodeBlock.of("_nativeNewJBytes(env, %L)", expr)
+        is KneType.ENUM -> CodeBlock.of("_nativeNewJvmEnum%L(env, %L.ordinal)", type.simpleName, expr)
+        is KneType.OBJECT -> CodeBlock.of("_nativeNewJvmProxy%L(env, %L)", type.simpleName, stableRefCreate(CodeBlock.of("%L", expr)))
+        is KneType.INTERFACE -> CodeBlock.of("_nativeNewJvmProxy%L(env, %L)", type.simpleName, stableRefCreate(CodeBlock.of("%L", expr)))
+        is KneType.DATA_CLASS -> CodeBlock.of("_nativeNewJvm%L(env, %L)", type.simpleName, expr)
+        is KneType.LIST -> CodeBlock.of("_nativeNewJvmListOf%L(env, %L)", jvmListElemId(type.elementType), expr)
+        is KneType.SET -> CodeBlock.of("_nativeNewJvmListOf%L(env, %L.toList())", jvmListElemId(type.elementType), expr)
         is KneType.MAP -> mapBuildExpr(CodeBlock.of("%L", expr), type)
         else -> CodeBlock.of("null")
     }
@@ -2965,17 +2965,17 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     private fun buildJvmEnumConstant(file: FileSpec.Builder, ref: Pair<String, String>) {
         val (fq, simple) = ref
         file.addFunction(
-            FunSpec.builder("_kneNewJvmEnum$simple")
+            FunSpec.builder("_nativeNewJvmEnum$simple")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("ordinal", PT.INT)
                 .returns(flavor.jobject.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "val fns = _kneFns(env)\n" +
-                            "val clazz = _kneClass(%S) ?: return null\n" +
+                        "val fns = _nativeFns(env)\n" +
+                            "val clazz = _nativeClass(%S) ?: return null\n" +
                             "%M {\n" +
-                            "    val mid = _kneStaticMethodId(env, clazz, %S, %S) ?: return null\n" +
+                            "    val mid = _nativeStaticMethodId(env, clazz, %S, %S) ?: return null\n" +
                             "    val arr = fns.CallStaticObjectMethodA!!.invoke(env, clazz, mid, null) ?: return null\n" +
                             "    return fns.GetObjectArrayElement!!.invoke(env, arr, ordinal)\n" +
                             "}\n",
@@ -2991,17 +2991,17 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     private fun buildJvmProxyFromHandle(file: FileSpec.Builder, cls: KneClass) {
         val fq = cls.fqName
         file.addFunction(
-            FunSpec.builder("_kneNewJvmProxy${cls.simpleName}")
+            FunSpec.builder("_nativeNewJvmProxy${cls.simpleName}")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("handle", PT.LONG)
                 .returns(flavor.jobject.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "val fns = _kneFns(env)\n" +
-                            "val clazz = _kneClass(%S) ?: return null\n" +
+                        "val fns = _nativeFns(env)\n" +
+                            "val clazz = _nativeClass(%S) ?: return null\n" +
                             "%M {\n" +
-                            "    val mid = _kneStaticMethodId(env, clazz, %S, %S) ?: return null\n" +
+                            "    val mid = _nativeStaticMethodId(env, clazz, %S, %S) ?: return null\n" +
                             "    val args = allocArray<%T>(1)\n" +
                             "    args[0].j = handle\n" +
                             "    return fns.CallStaticObjectMethodA!!.invoke(env, clazz, mid, args)\n" +
@@ -3018,7 +3018,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     /** Emits per-combination java.util.Map builders for all Map return/DC-field types. */
     private fun buildJvmMapHelpers(file: FileSpec.Builder, module: KneModule) {
         file.addType(
-            TypeSpec.objectBuilder("_kneHashMapCache")
+            TypeSpec.objectBuilder("_nativeHashMapCache")
                 .addModifiers(KModifier.INTERNAL)
                 .addAnnotation(THREAD_LOCAL)
                 .addProperty(
@@ -3030,16 +3030,16 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneNewJvmHashMap")
+            FunSpec.builder("_nativeNewJvmHashMap")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .returns(flavor.jobject.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "val fns = _kneFns(env)\n" +
-                            "val clazz = _kneClass(%S) ?: return null\n" +
-                            "var mid = _kneHashMapCache.ctor\n" +
-                            "if (mid == null) { mid = %M { fns.GetMethodID!!.invoke(env, clazz, %S.%M.ptr, %S.%M.ptr) }; _kneHashMapCache.ctor = mid }\n" +
+                        "val fns = _nativeFns(env)\n" +
+                            "val clazz = _nativeClass(%S) ?: return null\n" +
+                            "var mid = _nativeHashMapCache.ctor\n" +
+                            "if (mid == null) { mid = %M { fns.GetMethodID!!.invoke(env, clazz, %S.%M.ptr, %S.%M.ptr) }; _nativeHashMapCache.ctor = mid }\n" +
                             "return fns.NewObjectA!!.invoke(env, clazz, mid, null)\n",
                         "java/util/HashMap", M_MEM_SCOPED, "<init>", M_CSTR, "()V", M_CSTR,
                     ),
@@ -3047,7 +3047,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addType(
-            TypeSpec.objectBuilder("_kneBoxCache")
+            TypeSpec.objectBuilder("_nativeBoxCache")
                 .addModifiers(KModifier.INTERNAL)
                 .addAnnotation(THREAD_LOCAL)
                 .addProperty(
@@ -3061,7 +3061,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneJvmBoxSlot")
+            FunSpec.builder("_nativeJvmBoxSlot")
                 .addModifiers(KModifier.INTERNAL)
                 .addKdoc("Boxes a primitive via the boxed type's valueOf static method (payload slot picked by [slot]).\n")
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
@@ -3074,12 +3074,12 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .returns(flavor.jobject.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "val fns = _kneFns(env)\n" +
-                            "val clazz = _kneClass(boxClass) ?: return null\n" +
-                            "var mid = _kneBoxCache.mids[sig]\n" +
+                        "val fns = _nativeFns(env)\n" +
+                            "val clazz = _nativeClass(boxClass) ?: return null\n" +
+                            "var mid = _nativeBoxCache.mids[sig]\n" +
                             "if (mid == null) {\n" +
                             "    mid = %M { fns.GetStaticMethodID!!.invoke(env, clazz, %S.%M.ptr, sig.%M.ptr) }\n" +
-                            "    _kneBoxCache.mids[sig] = mid\n" +
+                            "    _nativeBoxCache.mids[sig] = mid\n" +
                             "}\n" +
                             "%M {\n" +
                             "    val args = allocArray<%T>(1)\n" +
@@ -3097,57 +3097,57 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneJvmBoxI")
+            FunSpec.builder("_nativeJvmBoxI")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("boxClass", PT.STRING)
                 .addParameter("sig", PT.STRING)
                 .addParameter("v", PT.INT)
                 .returns(flavor.jobject.copy(nullable = true))
-                .addCode(CodeBlock.of("return _kneJvmBoxSlot(env, boxClass, sig, 'i', v, 0L, 0.0)\n"))
+                .addCode(CodeBlock.of("return _nativeJvmBoxSlot(env, boxClass, sig, 'i', v, 0L, 0.0)\n"))
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneJvmBoxL")
+            FunSpec.builder("_nativeJvmBoxL")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("boxClass", PT.STRING)
                 .addParameter("sig", PT.STRING)
                 .addParameter("v", PT.LONG)
                 .returns(flavor.jobject.copy(nullable = true))
-                .addCode(CodeBlock.of("return _kneJvmBoxSlot(env, boxClass, sig, 'j', 0, v, 0.0)\n"))
+                .addCode(CodeBlock.of("return _nativeJvmBoxSlot(env, boxClass, sig, 'j', 0, v, 0.0)\n"))
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneJvmBoxD")
+            FunSpec.builder("_nativeJvmBoxD")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("v", PT.DOUBLE)
                 .returns(flavor.jobject.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "return _kneJvmBoxSlot(env, %S, %S, 'd', 0, 0L, v)\n",
+                        "return _nativeJvmBoxSlot(env, %S, %S, 'd', 0, 0L, v)\n",
                         "java/lang/Double", "(D)Ljava/lang/Double;",
                     ),
                 )
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneJvmBoxF")
+            FunSpec.builder("_nativeJvmBoxF")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("v", PT.FLOAT)
                 .returns(flavor.jobject.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "return _kneJvmBoxSlot(env, %S, %S, 'd', 0, 0L, v.toDouble())\n",
+                        "return _nativeJvmBoxSlot(env, %S, %S, 'd', 0, 0L, v.toDouble())\n",
                         "java/lang/Float", "(F)Ljava/lang/Float;",
                     ),
                 )
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneJvmMapPut")
+            FunSpec.builder("_nativeJvmMapPut")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("map", flavor.jobject.copy(nullable = true))
@@ -3155,9 +3155,9 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .addParameter("v", flavor.jobject.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "val fns = _kneFns(env)\n" +
+                        "val fns = _nativeFns(env)\n" +
                             "%M {\n" +
-                            "    val mid = fns.GetMethodID!!.invoke(env, _kneFns(env).GetObjectClass!!.invoke(env, map), %S.%M.ptr, %S.%M.ptr)\n" +
+                            "    val mid = fns.GetMethodID!!.invoke(env, _nativeFns(env).GetObjectClass!!.invoke(env, map), %S.%M.ptr, %S.%M.ptr)\n" +
                             "    val args = allocArray<%T>(2)\n" +
                             "    args[0].l = k\n" +
                             "    args[1].l = v\n" +
@@ -3176,16 +3176,16 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             val kid = payloadId(m.keyType)
             val vid = payloadId(m.valueType)
             file.addFunction(
-                FunSpec.builder("_kneNewJvmMap_${kid}_$vid")
+                FunSpec.builder("_nativeNewJvmMap_${kid}_$vid")
                     .addModifiers(KModifier.INTERNAL)
                     .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                     .addParameter("source", PT.MAP.parameterizedBy(nativePublic(m.keyType), nativePublic(m.valueType)))
                     .returns(flavor.jobject.copy(nullable = true))
                     .addCode(
                         CodeBlock.of(
-                            "val out = _kneNewJvmHashMap(env) ?: return null\n" +
+                            "val out = _nativeNewJvmHashMap(env) ?: return null\n" +
                                 "for ((k, v) in source) {\n" +
-                                "    _kneJvmMapPut(env, out, %L, %L)\n" +
+                                "    _nativeJvmMapPut(env, out, %L, %L)\n" +
                                 "}\n" +
                                 "return out\n",
                             mapBoxExpr(m.keyType, "k"), mapBoxExpr(m.valueType, "v"),
@@ -3222,18 +3222,18 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
     /** Boxes one Map entry value into a jobject. */
     private fun mapBoxExpr(type: KneType, expr: String): CodeBlock = when (type) {
-        KneType.INT -> CodeBlock.of("_kneJvmBoxI(env, %S, %S, %L)", "java/lang/Integer", "(I)Ljava/lang/Integer;", expr)
-        KneType.LONG -> CodeBlock.of("_kneJvmBoxL(env, %S, %S, %L)", "java/lang/Long", "(J)Ljava/lang/Long;", expr)
-        KneType.DOUBLE -> CodeBlock.of("_kneJvmBoxD(env, %L)", expr)
-        KneType.FLOAT -> CodeBlock.of("_kneJvmBoxF(env, %L)", expr)
-        KneType.SHORT -> CodeBlock.of("_kneJvmBoxI(env, %S, %S, %L.toInt())", "java/lang/Short", "(S)Ljava/lang/Short;", expr)
-        KneType.BYTE -> CodeBlock.of("_kneJvmBoxI(env, %S, %S, %L.toInt())", "java/lang/Byte", "(B)Ljava/lang/Byte;", expr)
-        KneType.BOOLEAN -> CodeBlock.of("_kneJvmBoxI(env, %S, %S, if (%L) 1 else 0)", "java/lang/Boolean", "(Z)Ljava/lang/Boolean;", expr)
-        KneType.STRING -> CodeBlock.of("_kneKToJ(env, %L)", expr)
-        is KneType.ENUM -> CodeBlock.of("_kneNewJvmEnum%L(env, %L.ordinal)", type.simpleName, expr)
-        is KneType.OBJECT -> CodeBlock.of("_kneNewJvmProxy%L(env, %L)", type.simpleName, stableRefCreate(CodeBlock.of("%L", expr)))
-        is KneType.INTERFACE -> CodeBlock.of("_kneNewJvmProxy%L(env, %L)", type.simpleName, stableRefCreate(CodeBlock.of("%L", expr)))
-        is KneType.DATA_CLASS -> CodeBlock.of("_kneNewJvm%L(env, %L)", type.simpleName, expr)
+        KneType.INT -> CodeBlock.of("_nativeJvmBoxI(env, %S, %S, %L)", "java/lang/Integer", "(I)Ljava/lang/Integer;", expr)
+        KneType.LONG -> CodeBlock.of("_nativeJvmBoxL(env, %S, %S, %L)", "java/lang/Long", "(J)Ljava/lang/Long;", expr)
+        KneType.DOUBLE -> CodeBlock.of("_nativeJvmBoxD(env, %L)", expr)
+        KneType.FLOAT -> CodeBlock.of("_nativeJvmBoxF(env, %L)", expr)
+        KneType.SHORT -> CodeBlock.of("_nativeJvmBoxI(env, %S, %S, %L.toInt())", "java/lang/Short", "(S)Ljava/lang/Short;", expr)
+        KneType.BYTE -> CodeBlock.of("_nativeJvmBoxI(env, %S, %S, %L.toInt())", "java/lang/Byte", "(B)Ljava/lang/Byte;", expr)
+        KneType.BOOLEAN -> CodeBlock.of("_nativeJvmBoxI(env, %S, %S, if (%L) 1 else 0)", "java/lang/Boolean", "(Z)Ljava/lang/Boolean;", expr)
+        KneType.STRING -> CodeBlock.of("_nativeKToJ(env, %L)", expr)
+        is KneType.ENUM -> CodeBlock.of("_nativeNewJvmEnum%L(env, %L.ordinal)", type.simpleName, expr)
+        is KneType.OBJECT -> CodeBlock.of("_nativeNewJvmProxy%L(env, %L)", type.simpleName, stableRefCreate(CodeBlock.of("%L", expr)))
+        is KneType.INTERFACE -> CodeBlock.of("_nativeNewJvmProxy%L(env, %L)", type.simpleName, stableRefCreate(CodeBlock.of("%L", expr)))
+        is KneType.DATA_CLASS -> CodeBlock.of("_nativeNewJvm%L(env, %L)", type.simpleName, expr)
         else -> CodeBlock.of("null")
     }
 
@@ -3247,7 +3247,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
     private fun buildExtraArrayHelpers(file: FileSpec.Builder) {
         file.addType(
-            TypeSpec.objectBuilder("_kneListCache")
+            TypeSpec.objectBuilder("_nativeListCache")
                 .addModifiers(KModifier.INTERNAL)
                 .addAnnotation(THREAD_LOCAL)
                 .addProperty(jmethodIdCacheProp("arrayCtor"))
@@ -3257,17 +3257,17 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneNewJvmArrayList")
+            FunSpec.builder("_nativeNewJvmArrayList")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("capacity", PT.INT)
                 .returns(flavor.jobject.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "val fns = _kneFns(env)\n" +
-                            "val clazz = _kneClass(%S) ?: return null\n" +
-                            "var mid = _kneListCache.arrayCtor\n" +
-                            "if (mid == null) { mid = %M { fns.GetMethodID!!.invoke(env, clazz, %S.%M.ptr, %S.%M.ptr) }; _kneListCache.arrayCtor = mid }\n" +
+                        "val fns = _nativeFns(env)\n" +
+                            "val clazz = _nativeClass(%S) ?: return null\n" +
+                            "var mid = _nativeListCache.arrayCtor\n" +
+                            "if (mid == null) { mid = %M { fns.GetMethodID!!.invoke(env, clazz, %S.%M.ptr, %S.%M.ptr) }; _nativeListCache.arrayCtor = mid }\n" +
                             "%M {\n" +
                             "    val args = allocArray<%T>(1)\n" +
                             "    args[0].i = capacity\n" +
@@ -3280,17 +3280,17 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneJvmListAdd")
+            FunSpec.builder("_nativeJvmListAdd")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("list", flavor.jobject.copy(nullable = true))
                 .addParameter("v", flavor.jobject.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "val fns = _kneFns(env)\n" +
+                        "val fns = _nativeFns(env)\n" +
                             "%M {\n" +
-                            "    var mid = _kneListCache.addMid\n" +
-                            "    if (mid == null) { mid = fns.GetMethodID!!.invoke(env, _kneFns(env).GetObjectClass!!.invoke(env, list), %S.%M.ptr, %S.%M.ptr); _kneListCache.addMid = mid }\n" +
+                            "    var mid = _nativeListCache.addMid\n" +
+                            "    if (mid == null) { mid = fns.GetMethodID!!.invoke(env, _nativeFns(env).GetObjectClass!!.invoke(env, list), %S.%M.ptr, %S.%M.ptr); _nativeListCache.addMid = mid }\n" +
                             "    val args = allocArray<%T>(1)\n" +
                             "    args[0].l = v\n" +
                             "    fns.CallBooleanMethodA!!.invoke(env, list, mid, args)\n" +
@@ -3301,7 +3301,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneJvmListSize")
+            FunSpec.builder("_nativeJvmListSize")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("list", flavor.jobject.copy(nullable = true))
@@ -3309,10 +3309,10 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .addCode(
                     CodeBlock.of(
                         "if (list == null) return 0\n" +
-                            "val fns = _kneFns(env)\n" +
+                            "val fns = _nativeFns(env)\n" +
                             "%M {\n" +
-                            "    var mid = _kneListCache.sizeMid\n" +
-                            "    if (mid == null) { mid = fns.GetMethodID!!.invoke(env, _kneFns(env).GetObjectClass!!.invoke(env, list), %S.%M.ptr, %S.%M.ptr); _kneListCache.sizeMid = mid }\n" +
+                            "    var mid = _nativeListCache.sizeMid\n" +
+                            "    if (mid == null) { mid = fns.GetMethodID!!.invoke(env, _nativeFns(env).GetObjectClass!!.invoke(env, list), %S.%M.ptr, %S.%M.ptr); _nativeListCache.sizeMid = mid }\n" +
                             "    return fns.CallIntMethodA!!.invoke(env, list, mid, null)\n" +
                             "}\n",
                         M_MEM_SCOPED, "size", M_CSTR, "()I", M_CSTR,
@@ -3321,7 +3321,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneJvmListGet")
+            FunSpec.builder("_nativeJvmListGet")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("list", flavor.jobject.copy(nullable = true))
@@ -3329,10 +3329,10 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .returns(flavor.jobject.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "val fns = _kneFns(env)\n" +
+                        "val fns = _nativeFns(env)\n" +
                             "%M {\n" +
-                            "    var mid = _kneListCache.getMid\n" +
-                            "    if (mid == null) { mid = fns.GetMethodID!!.invoke(env, _kneFns(env).GetObjectClass!!.invoke(env, list), %S.%M.ptr, %S.%M.ptr); _kneListCache.getMid = mid }\n" +
+                            "    var mid = _nativeListCache.getMid\n" +
+                            "    if (mid == null) { mid = fns.GetMethodID!!.invoke(env, _nativeFns(env).GetObjectClass!!.invoke(env, list), %S.%M.ptr, %S.%M.ptr); _nativeListCache.getMid = mid }\n" +
                             "    val args = allocArray<%T>(1)\n" +
                             "    args[0].i = i\n" +
                             "    return fns.CallObjectMethodA!!.invoke(env, list, mid, args)\n" +
@@ -3343,70 +3343,70 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneJvmUnboxInt")
+            FunSpec.builder("_nativeJvmUnboxInt")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("boxed", flavor.jobject.copy(nullable = true))
                 .returns(PT.INT)
                 .addCode(
                     CodeBlock.of(
-                        "return if (boxed == null) 0 else _kneFns(env).CallIntMethodA!!.invoke(env, boxed, _kneMethodId(env, _kneClass(%S), %S, %S), null)\n",
+                        "return if (boxed == null) 0 else _nativeFns(env).CallIntMethodA!!.invoke(env, boxed, _nativeMethodId(env, _nativeClass(%S), %S, %S), null)\n",
                         "java/lang/Integer", "intValue", "()I",
                     ),
                 )
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneJvmUnboxLong")
+            FunSpec.builder("_nativeJvmUnboxLong")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("boxed", flavor.jobject.copy(nullable = true))
                 .returns(PT.LONG)
                 .addCode(
                     CodeBlock.of(
-                        "return if (boxed == null) 0L else _kneFns(env).CallLongMethodA!!.invoke(env, boxed, _kneMethodId(env, _kneClass(%S), %S, %S), null)\n",
+                        "return if (boxed == null) 0L else _nativeFns(env).CallLongMethodA!!.invoke(env, boxed, _nativeMethodId(env, _nativeClass(%S), %S, %S), null)\n",
                         "java/lang/Long", "longValue", "()J",
                     ),
                 )
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneJvmUnboxDouble")
+            FunSpec.builder("_nativeJvmUnboxDouble")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("boxed", flavor.jobject.copy(nullable = true))
                 .returns(PT.DOUBLE)
                 .addCode(
                     CodeBlock.of(
-                        "return if (boxed == null) 0.0 else _kneFns(env).CallDoubleMethodA!!.invoke(env, boxed, _kneMethodId(env, _kneClass(%S), %S, %S), null)\n",
+                        "return if (boxed == null) 0.0 else _nativeFns(env).CallDoubleMethodA!!.invoke(env, boxed, _nativeMethodId(env, _nativeClass(%S), %S, %S), null)\n",
                         "java/lang/Double", "doubleValue", "()D",
                     ),
                 )
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneJvmUnboxFloat")
+            FunSpec.builder("_nativeJvmUnboxFloat")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("boxed", flavor.jobject.copy(nullable = true))
                 .returns(PT.FLOAT)
                 .addCode(
                     CodeBlock.of(
-                        "return if (boxed == null) 0f else _kneFns(env).CallFloatMethodA!!.invoke(env, boxed, _kneMethodId(env, _kneClass(%S), %S, %S), null)\n",
+                        "return if (boxed == null) 0f else _nativeFns(env).CallFloatMethodA!!.invoke(env, boxed, _nativeMethodId(env, _nativeClass(%S), %S, %S), null)\n",
                         "java/lang/Float", "floatValue", "()F",
                     ),
                 )
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneJvmUnboxBoolean")
+            FunSpec.builder("_nativeJvmUnboxBoolean")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("boxed", flavor.jobject.copy(nullable = true))
                 .returns(PT.BOOLEAN)
                 .addCode(
                     CodeBlock.of(
-                        "return if (boxed == null) false else _kneFns(env).CallBooleanMethodA!!.invoke(env, boxed, _kneMethodId(env, _kneClass(%S), %S, %S), null) != 0.toUByte()\n",
+                        "return if (boxed == null) false else _nativeFns(env).CallBooleanMethodA!!.invoke(env, boxed, _nativeMethodId(env, _nativeClass(%S), %S, %S), null) != 0.toUByte()\n",
                         "java/lang/Boolean", "booleanValue", "()Z",
                     ),
                 )
@@ -3414,7 +3414,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         )
 
         val listOfBuilder = { kind: String, valuesType: TypeName, addArg: CodeBlock ->
-            FunSpec.builder("_kneNewJvmListOf$kind")
+            FunSpec.builder("_nativeNewJvmListOf$kind")
                 .addModifiers(KModifier.INTERNAL)
                 .addKdoc("Constructs a java.util.List<$kind> from Kotlin values.\n")
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
@@ -3422,8 +3422,8 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .returns(flavor.jobject.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "val out = _kneNewJvmArrayList(env, values.size) ?: return null\n" +
-                            "for (v in values) _kneJvmListAdd(env, out, %L)\n" +
+                        "val out = _nativeNewJvmArrayList(env, values.size) ?: return null\n" +
+                            "for (v in values) _nativeJvmListAdd(env, out, %L)\n" +
                             "return out\n",
                         addArg,
                     ),
@@ -3433,41 +3433,41 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         file.addFunction(
             listOfBuilder(
                 "Int", PT.INT,
-                CodeBlock.of("_kneJvmBoxI(env, %S, %S, v)", "java/lang/Integer", "(I)Ljava/lang/Integer;"),
+                CodeBlock.of("_nativeJvmBoxI(env, %S, %S, v)", "java/lang/Integer", "(I)Ljava/lang/Integer;"),
             ),
         )
         file.addFunction(
-            listOfBuilder("String", PT.STRING, CodeBlock.of("_kneKToJ(env, v)")),
+            listOfBuilder("String", PT.STRING, CodeBlock.of("_nativeKToJ(env, v)")),
         )
         file.addFunction(
             listOfBuilder(
                 "Boolean", PT.BOOLEAN,
-                CodeBlock.of("_kneJvmBoxI(env, %S, %S, if (v) 1 else 0)", "java/lang/Boolean", "(Z)Ljava/lang/Boolean;"),
+                CodeBlock.of("_nativeJvmBoxI(env, %S, %S, if (v) 1 else 0)", "java/lang/Boolean", "(Z)Ljava/lang/Boolean;"),
             ),
         )
         file.addFunction(
             listOfBuilder(
                 "Long", PT.LONG,
-                CodeBlock.of("_kneJvmBoxL(env, %S, %S, v)", "java/lang/Long", "(J)Ljava/lang/Long;"),
+                CodeBlock.of("_nativeJvmBoxL(env, %S, %S, v)", "java/lang/Long", "(J)Ljava/lang/Long;"),
             ),
         )
-        file.addFunction(listOfBuilder("Double", PT.DOUBLE, CodeBlock.of("_kneJvmBoxD(env, v)")))
-        file.addFunction(listOfBuilder("Float", PT.FLOAT, CodeBlock.of("_kneJvmBoxF(env, v)")))
+        file.addFunction(listOfBuilder("Double", PT.DOUBLE, CodeBlock.of("_nativeJvmBoxD(env, v)")))
+        file.addFunction(listOfBuilder("Float", PT.FLOAT, CodeBlock.of("_nativeJvmBoxF(env, v)")))
         file.addFunction(
             listOfBuilder(
                 "Short", PT.SHORT,
-                CodeBlock.of("_kneJvmBoxI(env, %S, %S, v.toInt())", "java/lang/Short", "(S)Ljava/lang/Short;"),
+                CodeBlock.of("_nativeJvmBoxI(env, %S, %S, v.toInt())", "java/lang/Short", "(S)Ljava/lang/Short;"),
             ),
         )
         file.addFunction(
             listOfBuilder(
                 "Byte", PT.BYTE,
-                CodeBlock.of("_kneJvmBoxI(env, %S, %S, v.toInt())", "java/lang/Byte", "(B)Ljava/lang/Byte;"),
+                CodeBlock.of("_nativeJvmBoxI(env, %S, %S, v.toInt())", "java/lang/Byte", "(B)Ljava/lang/Byte;"),
             ),
         )
 
         val readListBuilder = { kind: String, listType: TypeName, readExpr: CodeBlock ->
-            FunSpec.builder("_kneReadJvmListOf$kind")
+            FunSpec.builder("_nativeReadJvmListOf$kind")
                 .addModifiers(KModifier.INTERNAL)
                 .addKdoc("Reads a java.util.List<$kind> into a Kotlin list.\n")
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
@@ -3475,7 +3475,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .returns(listType)
                 .addCode(
                     CodeBlock.of(
-                        "val n = _kneJvmListSize(env, list)\n" +
+                        "val n = _nativeJvmListSize(env, list)\n" +
                             "return List(n) { %L }\n",
                         readExpr,
                     ),
@@ -3485,80 +3485,80 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         file.addFunction(
             readListBuilder(
                 "Short", PT.LIST.parameterizedBy(PT.SHORT),
-                CodeBlock.of("_kneJvmUnboxInt(env, _kneJvmListGet(env, list, it)).toShort()"),
+                CodeBlock.of("_nativeJvmUnboxInt(env, _nativeJvmListGet(env, list, it)).toShort()"),
             ),
         )
         file.addFunction(
             readListBuilder(
                 "Byte", PT.LIST.parameterizedBy(PT.BYTE),
-                CodeBlock.of("_kneJvmUnboxInt(env, _kneJvmListGet(env, list, it)).toByte()"),
+                CodeBlock.of("_nativeJvmUnboxInt(env, _nativeJvmListGet(env, list, it)).toByte()"),
             ),
         )
         file.addFunction(
             readListBuilder(
                 "Float", PT.LIST.parameterizedBy(PT.FLOAT),
-                CodeBlock.of("_kneJvmUnboxFloat(env, _kneJvmListGet(env, list, it))"),
+                CodeBlock.of("_nativeJvmUnboxFloat(env, _nativeJvmListGet(env, list, it))"),
             ),
         )
         file.addFunction(
             readListBuilder(
                 "Long", PT.LIST.parameterizedBy(PT.LONG),
-                CodeBlock.of("_kneJvmUnboxLong(env, _kneJvmListGet(env, list, it))"),
+                CodeBlock.of("_nativeJvmUnboxLong(env, _nativeJvmListGet(env, list, it))"),
             ),
         )
         file.addFunction(
             readListBuilder(
                 "Double", PT.LIST.parameterizedBy(PT.DOUBLE),
-                CodeBlock.of("_kneJvmUnboxDouble(env, _kneJvmListGet(env, list, it))"),
+                CodeBlock.of("_nativeJvmUnboxDouble(env, _nativeJvmListGet(env, list, it))"),
             ),
         )
         file.addFunction(
             readListBuilder(
                 "Int", PT.LIST.parameterizedBy(PT.INT),
-                CodeBlock.of("_kneJvmUnboxInt(env, _kneJvmListGet(env, list, it))"),
+                CodeBlock.of("_nativeJvmUnboxInt(env, _nativeJvmListGet(env, list, it))"),
             ),
         )
         file.addFunction(
             readListBuilder(
                 "String", PT.LIST.parameterizedBy(PT.STRING),
-                CodeBlock.of("_kneJToK(env, _kneJvmListGet(env, list, it)) ?: \"\""),
+                CodeBlock.of("_nativeJToK(env, _nativeJvmListGet(env, list, it)) ?: \"\""),
             ),
         )
         file.addFunction(
             readListBuilder(
                 "Boolean", PT.LIST.parameterizedBy(PT.BOOLEAN),
-                CodeBlock.of("_kneJvmUnboxBoolean(env, _kneJvmListGet(env, list, it))"),
+                CodeBlock.of("_nativeJvmUnboxBoolean(env, _nativeJvmListGet(env, list, it))"),
             ),
         )
 
         file.addFunction(
-            FunSpec.builder("_kneNewJStrArr")
+            FunSpec.builder("_nativeNewJStrArr")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("values", PT.LIST.parameterizedBy(PT.STRING))
                 .returns(flavor.jobject.copy(nullable = true))
-                .addCode(CodeBlock.of("return _kneNewJObjArr(env, values.map { _kneKToJ(env, it) })\n"))
+                .addCode(CodeBlock.of("return _nativeNewJObjArr(env, values.map { _nativeKToJ(env, it) })\n"))
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneNewJBytesArr")
+            FunSpec.builder("_nativeNewJBytesArr")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("values", PT.LIST.parameterizedBy(PT.BYTE_ARRAY))
                 .returns(flavor.jobject.copy(nullable = true))
-                .addCode(CodeBlock.of("return _kneNewJObjArr(env, values.map { _kneNewJBytes(env, it) })\n"))
+                .addCode(CodeBlock.of("return _nativeNewJObjArr(env, values.map { _nativeNewJBytes(env, it) })\n"))
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneNewJObjArr")
+            FunSpec.builder("_nativeNewJObjArr")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("elements", PT.LIST.parameterizedBy(flavor.jobject.copy(nullable = true)))
                 .returns(flavor.jobject.copy(nullable = true))
                 .addCode(
                     CodeBlock.of(
-                        "val arr = _kneNewObjArr(env, elements.size, _kneClass(%S)) ?: return null\n" +
-                            "elements.forEachIndexed { i, e -> _kneObjArrSet(env, arr, i, e) }\n" +
+                        "val arr = _nativeNewObjArr(env, elements.size, _nativeClass(%S)) ?: return null\n" +
+                            "elements.forEachIndexed { i, e -> _nativeObjArrSet(env, arr, i, e) }\n" +
                             "return arr\n",
                         "java/lang/Object",
                     ),
@@ -3566,7 +3566,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneReadJStrList")
+            FunSpec.builder("_nativeReadJStrList")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("arr", flavor.jobject.copy(nullable = true))
@@ -3574,14 +3574,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .addCode(
                     CodeBlock.of(
                         "if (arr == null) return null\n" +
-                            "val n = _kneObjArrLen(env, arr)\n" +
-                            "return List(n) { _kneJToK(env, _kneObjArrGet(env, arr, it)) ?: \"\" }\n",
+                            "val n = _nativeObjArrLen(env, arr)\n" +
+                            "return List(n) { _nativeJToK(env, _nativeObjArrGet(env, arr, it)) ?: \"\" }\n",
                     ),
                 )
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneReadJBytesList")
+            FunSpec.builder("_nativeReadJBytesList")
                 .addModifiers(KModifier.INTERNAL)
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
                 .addParameter("arr", flavor.jobject.copy(nullable = true))
@@ -3589,14 +3589,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .addCode(
                     CodeBlock.of(
                         "if (arr == null) return null\n" +
-                            "val n = _kneObjArrLen(env, arr)\n" +
-                            "return List(n) { _kneReadJBytes(env, _kneObjArrGet(env, arr, it)) ?: ByteArray(0) }\n",
+                            "val n = _nativeObjArrLen(env, arr)\n" +
+                            "return List(n) { _nativeReadJBytes(env, _nativeObjArrGet(env, arr, it)) ?: ByteArray(0) }\n",
                     ),
                 )
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneReadJNestedList")
+            FunSpec.builder("_nativeReadJNestedList")
                 .addModifiers(KModifier.INTERNAL)
                 .addKdoc("Reads a jobjectArray of nested collection payloads into a Kotlin nested list.\n")
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
@@ -3606,14 +3606,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .addCode(
                     CodeBlock.of(
                         "if (arr == null) return emptyList()\n" +
-                            "val n = _kneObjArrLen(env, arr)\n" +
-                            "return List(n) { i -> _kneDecodeNestedElem(env, _kneObjArrGet(env, arr, i), elemPayloadId) }\n",
+                            "val n = _nativeObjArrLen(env, arr)\n" +
+                            "return List(n) { i -> _nativeDecodeNestedElem(env, _nativeObjArrGet(env, arr, i), elemPayloadId) }\n",
                     ),
                 )
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneDecodeNestedElem")
+            FunSpec.builder("_nativeDecodeNestedElem")
                 .addModifiers(KModifier.INTERNAL)
                 .addKdoc("Decodes one nested-collection element by payload id (L/S/M prefixes + element kind).\n")
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
@@ -3626,14 +3626,14 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                             "return when {\n" +
                             "    id.startsWith(%S) -> {\n" +
                             "        val inner = id.substring(1)\n" +
-                            "        _kneDecodeFlatArray(env, elem, inner) ?: emptyList<Any?>()\n" +
+                            "        _nativeDecodeFlatArray(env, elem, inner) ?: emptyList<Any?>()\n" +
                             "    }\n" +
                             "    id.startsWith(%S) -> {\n" +
                             "        val inner = id.substring(1)\n" +
-                            "        (_kneDecodeFlatArray(env, elem, inner) ?: emptyList<Any?>()).toSet()\n" +
+                            "        (_nativeDecodeFlatArray(env, elem, inner) ?: emptyList<Any?>()).toSet()\n" +
                             "    }\n" +
                             "    id.startsWith(%S) -> emptyMap<Any, Any>() // nested maps in collection params are not supported\n" +
-                            "    else -> _kneDecodeFlatArray(env, elem, id)\n" +
+                            "    else -> _nativeDecodeFlatArray(env, elem, id)\n" +
                             "}\n",
                         "L", "S", "M",
                     ),
@@ -3641,7 +3641,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .build(),
         )
         file.addFunction(
-            FunSpec.builder("_kneDecodeFlatArray")
+            FunSpec.builder("_nativeDecodeFlatArray")
                 .addModifiers(KModifier.INTERNAL)
                 .addKdoc("Decodes a flat JNI array element (jarray) into a Kotlin List by payload id.\n")
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
@@ -3651,15 +3651,15 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .addCode(
                     CodeBlock.of(
                         "return when (id) {\n" +
-                            "    %S -> _kneReadJIntArray(env, elem)?.toList()\n" +
-                            "    %S -> _kneReadJLongArray(env, elem)?.toList()\n" +
-                            "    %S -> _kneReadJDoubleArray(env, elem)?.toList()\n" +
-                            "    %S -> _kneReadJFloatArray(env, elem)?.toList()\n" +
-                            "    %S -> _kneReadJShortArray(env, elem)?.toList()\n" +
-                            "    %S -> _kneReadJBytes(env, elem)?.toList()\n" +
-                            "    %S -> _kneReadJBooleanArray(env, elem)?.toList()\n" +
-                            "    %S -> _kneReadJStrList(env, elem)\n" +
-                            "    %S -> _kneReadJBytesList(env, elem)\n" +
+                            "    %S -> _nativeReadJIntArray(env, elem)?.toList()\n" +
+                            "    %S -> _nativeReadJLongArray(env, elem)?.toList()\n" +
+                            "    %S -> _nativeReadJDoubleArray(env, elem)?.toList()\n" +
+                            "    %S -> _nativeReadJFloatArray(env, elem)?.toList()\n" +
+                            "    %S -> _nativeReadJShortArray(env, elem)?.toList()\n" +
+                            "    %S -> _nativeReadJBytes(env, elem)?.toList()\n" +
+                            "    %S -> _nativeReadJBooleanArray(env, elem)?.toList()\n" +
+                            "    %S -> _nativeReadJStrList(env, elem)\n" +
+                            "    %S -> _nativeReadJBytesList(env, elem)\n" +
                             "    else -> null\n" +
                             "}\n",
                         "Int", "Long", "Double", "Float", "Short", "Byte", "Boolean", "String", "Bytes",
@@ -3685,7 +3685,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         }.unindent().build()
 
         file.addFunction(
-            FunSpec.builder("_kneReadJvm$n")
+            FunSpec.builder("_nativeReadJvm$n")
                 .addModifiers(KModifier.INTERNAL)
                 .addKdoc("Reads fields of a JVM $n object into a native instance (DC-returning callbacks).\n")
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
@@ -3693,7 +3693,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .returns(kotlinType(fq))
                 .addCode(
                     CodeBlock.builder()
-                        .add("val fns = _kneFns(env)\n")
+                        .add("val fns = _nativeFns(env)\n")
                         .add("val clazz = fns.GetObjectClass!!.invoke(env, obj)\n")
                         .add("return %T(%L)\n", kotlinType(fq), ctorArgs)
                         .build(),
@@ -3704,46 +3704,46 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
 
     /** Expression reading one DC field from a JVM object via cached field IDs. */
     private fun dcFieldReadExpr(type: KneType, fieldName: String, clazzVar: String): CodeBlock = when (type) {
-        KneType.INT -> CodeBlock.of("fns.GetIntField!!.invoke(env, obj, _kneFieldId(env, %L, %S, %S))", clazzVar, fieldName, "I")
-        KneType.LONG -> CodeBlock.of("fns.GetLongField!!.invoke(env, obj, _kneFieldId(env, %L, %S, %S))", clazzVar, fieldName, "J")
-        KneType.DOUBLE -> CodeBlock.of("fns.GetDoubleField!!.invoke(env, obj, _kneFieldId(env, %L, %S, %S))", clazzVar, fieldName, "D")
-        KneType.FLOAT -> CodeBlock.of("fns.GetFloatField!!.invoke(env, obj, _kneFieldId(env, %L, %S, %S))", clazzVar, fieldName, "F")
-        KneType.BOOLEAN -> CodeBlock.of("fns.GetBooleanField!!.invoke(env, obj, _kneFieldId(env, %L, %S, %S)) != 0.toUByte()", clazzVar, fieldName, "Z")
-        KneType.BYTE -> CodeBlock.of("fns.GetByteField!!.invoke(env, obj, _kneFieldId(env, %L, %S, %S))", clazzVar, fieldName, "B")
-        KneType.SHORT -> CodeBlock.of("fns.GetShortField!!.invoke(env, obj, _kneFieldId(env, %L, %S, %S))", clazzVar, fieldName, "S")
+        KneType.INT -> CodeBlock.of("fns.GetIntField!!.invoke(env, obj, _nativeFieldId(env, %L, %S, %S))", clazzVar, fieldName, "I")
+        KneType.LONG -> CodeBlock.of("fns.GetLongField!!.invoke(env, obj, _nativeFieldId(env, %L, %S, %S))", clazzVar, fieldName, "J")
+        KneType.DOUBLE -> CodeBlock.of("fns.GetDoubleField!!.invoke(env, obj, _nativeFieldId(env, %L, %S, %S))", clazzVar, fieldName, "D")
+        KneType.FLOAT -> CodeBlock.of("fns.GetFloatField!!.invoke(env, obj, _nativeFieldId(env, %L, %S, %S))", clazzVar, fieldName, "F")
+        KneType.BOOLEAN -> CodeBlock.of("fns.GetBooleanField!!.invoke(env, obj, _nativeFieldId(env, %L, %S, %S)) != 0.toUByte()", clazzVar, fieldName, "Z")
+        KneType.BYTE -> CodeBlock.of("fns.GetByteField!!.invoke(env, obj, _nativeFieldId(env, %L, %S, %S))", clazzVar, fieldName, "B")
+        KneType.SHORT -> CodeBlock.of("fns.GetShortField!!.invoke(env, obj, _nativeFieldId(env, %L, %S, %S))", clazzVar, fieldName, "S")
         KneType.STRING -> CodeBlock.of(
-            "_kneJToK(env, fns.GetObjectField!!.invoke(env, obj, _kneFieldId(env, %L, %S, %S))) ?: \"\"",
+            "_nativeJToK(env, fns.GetObjectField!!.invoke(env, obj, _nativeFieldId(env, %L, %S, %S))) ?: \"\"",
             clazzVar, fieldName, "Ljava/lang/String;",
         )
         KneType.BYTE_ARRAY -> CodeBlock.of(
-            "_kneReadJBytes(env, fns.GetObjectField!!.invoke(env, obj, _kneFieldId(env, %L, %S, %S))) ?: ByteArray(0)",
+            "_nativeReadJBytes(env, fns.GetObjectField!!.invoke(env, obj, _nativeFieldId(env, %L, %S, %S))) ?: ByteArray(0)",
             clazzVar, fieldName, "[B",
         )
         is KneType.ENUM -> CodeBlock.of(
-            "%T.entries[fns.CallIntMethodA!!.invoke(env, fns.GetObjectField!!.invoke(env, obj, _kneFieldId(env, %L, %S, %S)), _kneMethodId(env, _kneClass(%S), %S, %S), null)]",
+            "%T.entries[fns.CallIntMethodA!!.invoke(env, fns.GetObjectField!!.invoke(env, obj, _nativeFieldId(env, %L, %S, %S)), _nativeMethodId(env, _nativeClass(%S), %S, %S), null)]",
             kotlinType(type.fqName), clazzVar, fieldName, "L${type.jvmClassPath()};",
             type.jvmClassPath(), "ordinal", "()I",
         )
         is KneType.OBJECT -> CodeBlock.of(
-            "_kneReadJvmHandle(env, fns.GetObjectField!!.invoke(env, obj, _kneFieldId(env, %L, %S, %S))).%M<%T>()!!.asStableRef<%T>().get()",
+            "_nativeReadJvmHandle(env, fns.GetObjectField!!.invoke(env, obj, _nativeFieldId(env, %L, %S, %S))).%M<%T>()!!.asStableRef<%T>().get()",
             clazzVar, fieldName, "L${type.jvmClassPath()};",
             M_TO_C_POINTER, C_OPAQUE, kotlinType(type.fqName),
         )
         is KneType.INTERFACE -> CodeBlock.of(
-            "_kneReadJvmHandle(env, fns.GetObjectField!!.invoke(env, obj, _kneFieldId(env, %L, %S, %S))).%M<%T>()!!.asStableRef<%T>().get()",
+            "_nativeReadJvmHandle(env, fns.GetObjectField!!.invoke(env, obj, _nativeFieldId(env, %L, %S, %S))).%M<%T>()!!.asStableRef<%T>().get()",
             clazzVar, fieldName, "L${type.jvmClassPath()};",
             M_TO_C_POINTER, C_OPAQUE, kotlinType(type.fqName),
         )
         is KneType.DATA_CLASS -> CodeBlock.of(
-            "_kneReadJvm%L(env, fns.GetObjectField!!.invoke(env, obj, _kneFieldId(env, %L, %S, %S)))",
+            "_nativeReadJvm%L(env, fns.GetObjectField!!.invoke(env, obj, _nativeFieldId(env, %L, %S, %S)))",
             type.simpleName, clazzVar, fieldName, "L${type.jvmClassPath()};",
         )
         is KneType.LIST -> CodeBlock.of(
-            "_kneReadJvmListOf%L(env, fns.GetObjectField!!.invoke(env, obj, _kneFieldId(env, %L, %S, %S)))",
+            "_nativeReadJvmListOf%L(env, fns.GetObjectField!!.invoke(env, obj, _nativeFieldId(env, %L, %S, %S)))",
             jvmListElemId(type.elementType), clazzVar, fieldName, "Ljava/util/List;",
         )
         is KneType.SET -> CodeBlock.of(
-            "_kneReadJvmListOf%L(env, fns.GetObjectField!!.invoke(env, obj, _kneFieldId(env, %L, %S, %S)))",
+            "_nativeReadJvmListOf%L(env, fns.GetObjectField!!.invoke(env, obj, _nativeFieldId(env, %L, %S, %S)))",
             jvmListElemId(type.elementType), clazzVar, fieldName, "Ljava/util/List;",
         )
         is KneType.MAP -> CodeBlock.of(
@@ -3756,7 +3756,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     /** Emits common helpers used by DC readers and OBJECT-returning callbacks. */
     private fun buildReadHelpers(file: FileSpec.Builder) {
         file.addFunction(
-            FunSpec.builder("_kneReadJvmHandle")
+            FunSpec.builder("_nativeReadJvmHandle")
                 .addModifiers(KModifier.INTERNAL)
                 .addKdoc("Reads the native handle stored in a JVM proxy object's `handle: Long` field.\n")
                 .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
@@ -3764,9 +3764,9 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                 .returns(PT.LONG)
                 .addCode(
                     CodeBlock.of(
-                        "val fns = _kneFns(env)\n" +
+                        "val fns = _nativeFns(env)\n" +
                             "val clazz = fns.GetObjectClass!!.invoke(env, obj)\n" +
-                            "val fid = _kneFieldId(env, clazz, %S, %S) ?: return 0L\n" +
+                            "val fid = _nativeFieldId(env, clazz, %S, %S) ?: return 0L\n" +
                             "return fns.GetLongField!!.invoke(env, obj, fid)\n",
                         "handle", "J",
                     ),
@@ -3787,9 +3787,9 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         val hasFlow = module.classes.any { cls -> cls.methods.any { it.returnType is KneType.FLOW } } ||
             module.functions.any { it.returnType is KneType.FLOW }
 
-        val disposeSymbol = registerMethod(hostClass, "_kneDisposeRef", "(J)V", "kne_disposeRef")
+        val disposeSymbol = registerMethod(hostClass, "_nativeDisposeRef", "(J)V", "native_disposeRef")
         file.addFunction(
-            FunSpec.builder("kne_disposeRef")
+            FunSpec.builder("native_disposeRef")
                 .addAnnotation(cnameAnnotation(disposeSymbol))
                 .addParameters(jniPrefixParams())
                 .addParameter("handle", PT.LONG)
@@ -3820,9 +3820,9 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
                     M_TO_C_POINTER, C_OPAQUE, JOB,
                 )
             }
-            val cancelSymbol = registerMethod(hostClass, "_kneCancelJob", "(J)V", "kne_cancelJob")
+            val cancelSymbol = registerMethod(hostClass, "_nativeCancelJob", "(J)V", "native_cancelJob")
             file.addFunction(
-                FunSpec.builder("kne_cancelJob")
+                FunSpec.builder("native_cancelJob")
                     .addAnnotation(cnameAnnotation(cancelSymbol))
                     .addParameters(jniPrefixParams())
                     .addParameter("jobHandle", PT.LONG)
@@ -3832,9 +3832,9 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         }
 
         if (hasFlow) {
-            val creditSymbol = registerMethod(hostClass, "_kneFlowCredit", "(J)V", "kne_flowCredit")
+            val creditSymbol = registerMethod(hostClass, "_nativeFlowCredit", "(J)V", "native_flowCredit")
             file.addFunction(
-                FunSpec.builder("kne_flowCredit")
+                FunSpec.builder("native_flowCredit")
                     .addAnnotation(cnameAnnotation(creditSymbol))
                     .addParameters(jniPrefixParams())
                     .addParameter("jobHandle", PT.LONG)
@@ -3857,24 +3857,24 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         body.add("try {\n")
         body.indent()
         body.add("println(%S)\n", "kne: bootstrap starting")
-        body.add("val fns = _kneFns(env)\n")
+        body.add("val fns = _nativeFns(env)\n")
         body.add("%M {\n", M_MEM_SCOPED)
         body.indent()
         body.add("val vmStorage = alloc<%T<%T>>()\n", C_POINTER_VAR, flavor.javaVmVar)
         body.add("val rc = fns.GetJavaVM!!. %M(env, vmStorage.ptr)\n", M_INVOKE)
         body.add("check(rc == 0) { %S + rc }\n", "GetJavaVM failed: ")
-        body.add("_kneVM = vmStorage.value\n")
+        body.add("_nativeVM = vmStorage.value\n")
         // global-ref caches: exception class, boxing classes, registered classes
         body.add(
-            "_kneExceptionClass = _kneGlobal(env, fns.FindClass!!.invoke(env, %S.%M.ptr))\n",
+            "_nativeExceptionClass = _nativeGlobal(env, fns.FindClass!!.invoke(env, %S.%M.ptr))\n",
             jvmClassPath("KotlinNativeException"), M_CSTR,
         )
         body.add(
-            "_kneClassCache[%S] = _kneGlobal(env, %M { fns.FindClass!!.invoke(env, %S.%M.ptr) })\n",
+            "_nativeClassCache[%S] = _nativeGlobal(env, %M { fns.FindClass!!.invoke(env, %S.%M.ptr) })\n",
             "java/lang/Object", M_MEM_SCOPED, "java/lang/Object", M_CSTR,
         )
         body.add(
-            "_kneClassCache[%S] = _kneGlobal(env, %M { fns.FindClass!!.invoke(env, %S.%M.ptr) })\n",
+            "_nativeClassCache[%S] = _nativeGlobal(env, %M { fns.FindClass!!.invoke(env, %S.%M.ptr) })\n",
             "java/util/HashMap", M_MEM_SCOPED, "java/util/HashMap", M_CSTR,
         )
         body.add(
@@ -3882,7 +3882,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             "java/lang/Integer", "java/lang/Long", "java/lang/Double", "java/lang/Float", "java/lang/Short", "java/lang/Byte", "java/lang/Boolean",
         )
         body.indent()
-        body.add("_kneClassCache[fqn] = _kneGlobal(env, %M { fns.FindClass!!.invoke(env, fqn.%M.ptr) })\n", M_MEM_SCOPED, M_CSTR)
+        body.add("_nativeClassCache[fqn] = _nativeGlobal(env, %M { fns.FindClass!!.invoke(env, fqn.%M.ptr) })\n", M_MEM_SCOPED, M_CSTR)
         body.unindent()
         body.add("}\n")
         // Collections are materialised for every List/Set/Map payload and DC field, so their
@@ -3892,7 +3892,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             "java/util/ArrayList", "java/util/List", "java/util/Set", "java/util/Map",
         )
         body.indent()
-        body.add("_kneClassCache[fqn] = _kneGlobal(env, %M { fns.FindClass!!.invoke(env, fqn.%M.ptr) })\n", M_MEM_SCOPED, M_CSTR)
+        body.add("_nativeClassCache[fqn] = _nativeGlobal(env, %M { fns.FindClass!!.invoke(env, fqn.%M.ptr) })\n", M_MEM_SCOPED, M_CSTR)
         body.unindent()
         body.add("}\n")
         // Class refs for everything the runtime resolves by name later: proxy classes
@@ -3903,7 +3903,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             body.indent()
             body.add("val clazz = fns.FindClass!!.invoke(env, %S.%M.ptr)\n", className, M_CSTR)
             body.add("check(clazz != null) { %S }\n", "FindClass failed: $className")
-            body.add("_kneClassCache[%S] = _kneGlobal(env, clazz)\n", className)
+            body.add("_nativeClassCache[%S] = _nativeGlobal(env, clazz)\n", className)
             body.unindent()
             body.add("}\n")
         }
@@ -3920,7 +3920,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
         body.unindent()
         body.add("}\n")
 
-        return FunSpec.builder("kne_initNatives")
+        return FunSpec.builder("native_initNatives")
             .addKdoc(
                 "Resolved by the JVM via dlsym when KneRuntime.initNatives() runs. Initializes the JNI " +
                     "runtime: grabs the JavaVM and caches the exception/box/collection/business class " +
@@ -3933,7 +3933,7 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
     }
 
     private fun buildCompletionMid(): FunSpec =
-        FunSpec.builder("_kneCompletionMid")
+        FunSpec.builder("_nativeCompletionMid")
             .addModifiers(KModifier.INTERNAL)
             .addParameter("env", KneCinteropTypes.pointerTo(flavor.envVar))
             .addParameter("obj", flavor.jobject.copy(nullable = true))
@@ -3942,9 +3942,9 @@ class JniNativeBridgeGenerator private constructor(private val flavor: JniBindin
             .returns(flavor.jmethodId.copy(nullable = true))
             .addCode(
                 CodeBlock.of(
-                    "val _kneClazz = _kneFns(env).GetObjectClass!!.invoke(env, obj)\n" +
-                        "val mid = %M { _kneFns(env).GetMethodID!!.invoke(env, _kneClazz, name.%M.ptr, sig.%M.ptr) }\n" +
-                        "_kneFns(env).DeleteLocalRef!!.invoke(env, _kneClazz)\n" +
+                    "val _nativeClazz = _nativeFns(env).GetObjectClass!!.invoke(env, obj)\n" +
+                        "val mid = %M { _nativeFns(env).GetMethodID!!.invoke(env, _nativeClazz, name.%M.ptr, sig.%M.ptr) }\n" +
+                        "_nativeFns(env).DeleteLocalRef!!.invoke(env, _nativeClazz)\n" +
                         "return mid\n",
                     M_MEM_SCOPED, M_CSTR, M_CSTR,
                 ),
