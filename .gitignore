@@ -11,3 +11,4 @@ build
 openspec
 AGENTS.md
 .zcode
+gradle-daemon-jvm.properties

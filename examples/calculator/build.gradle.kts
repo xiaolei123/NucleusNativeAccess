@@ -1,8 +1,10 @@
 import io.github.kdroidfilter.nucleus.desktop.application.dsl.TargetFormat
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     kotlin("multiplatform")
     id("org.jetbrains.compose") version "1.12.1"
+    id("com.android.kotlin.multiplatform.library") version "9.5.2"
     id("org.jetbrains.kotlin.plugin.compose") version "2.4.20"
     id("org.jetbrains.compose.hot-reload") version "1.3.0-beta01"
     id("io.github.kdroidfilter.nucleus") version "1.7.2"
@@ -21,6 +23,16 @@ kotlin {
         else -> error("Unsupported host OS: $hostOs")
     }
 
+    android {
+        namespace = "com.calculator"
+        compileSdk = 36
+        minSdk = 21
+        // targetSdk 是 application 专属，library 不支持 → 删掉
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_11)
+        }
+        androidResources { enable = true }   // 用到 Compose 资源时必须显式开
+    }
     // Android device target: the .so lands in jniLibs/arm64-v8a/ for APK bundling
     for (target in listOf(
         androidNativeArm64(),
